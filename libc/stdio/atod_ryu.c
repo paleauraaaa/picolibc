@@ -36,7 +36,7 @@
 #define DOUBLE_EXPONENT_BITS 11
 #define DOUBLE_EXPONENT_BIAS 1023
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 
 static inline uint32_t

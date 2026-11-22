@@ -95,4 +95,3 @@ foreach file : srcs_posix
 endforeach
 
 src_posix = files(srcs_posix_use)
-  

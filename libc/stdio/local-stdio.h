@@ -285,6 +285,27 @@ void __flockfile_init(FILE *f);
 #define __stdio_acquire_file(f)        __acquire_capability((f)->lock)
 #define __stdio_try_acquire_file(r, f) __try_acquire_capability(r, (f)->lock)
 #define __stdio_release_file(f)        __release_capability((f)->lock)
+
+static inline _LOCK_RECURSIVE_T
+__stdio_load_lock(FILE *f)
+{
+#ifdef _XBOX
+    return __atomic_load_n(&f->lock, __ATOMIC_ACQUIRE);
+#else
+    return f->lock;
+#endif
+}
+
+static inline _LOCK_RECURSIVE_T
+__stdio_get_lock(FILE *f)
+{
+    _LOCK_RECURSIVE_T lock = __stdio_load_lock(f);
+    if (!lock) {
+        __flockfile_init(f);
+        lock = __stdio_load_lock(f);
+    }
+    return lock;
+}
 #else
 #define __LOCK_INIT_NONE
 #define __stdio_acquire_file(f)
@@ -303,10 +324,9 @@ __flockfile(FILE *f) __stdio_acquire_file(f) __no_thread_safety_analysis
 {
     (void)f;
 #ifdef __STDIO_LOCKING
-    if (!f->lock)
-        __flockfile_init(f);
-    if (f->lock != __LOCK_NONE)
-        __lock_acquire_recursive(f->lock);
+    _LOCK_RECURSIVE_T lock = __stdio_get_lock(f);
+    if (lock != __LOCK_NONE)
+        __lock_acquire_recursive(lock);
 #endif
 }
 
@@ -315,8 +335,9 @@ __funlockfile(FILE *f) __stdio_release_file(f) __no_thread_safety_analysis
 {
     (void)f;
 #ifdef __STDIO_LOCKING
-    if (f->lock != __LOCK_NONE)
-        __lock_release_recursive(f->lock);
+    _LOCK_RECURSIVE_T lock = __stdio_load_lock(f);
+    if (lock != __LOCK_NONE)
+        __lock_release_recursive(lock);
 #endif
 }
 
@@ -326,9 +347,16 @@ __flockfile_close(FILE *f) __stdio_release_file(f) __no_thread_safety_analysis
     int ret = 0;
     (void)f;
 #ifdef __STDIO_LOCKING
-    if (f->lock && f->lock != __LOCK_NONE) {
+    _LOCK_RECURSIVE_T lock = __stdio_load_lock(f);
+    if (lock && lock != __LOCK_NONE) {
         ret = fflush(f);
-        __lock_close(f->lock);
+        /* A close callback may itself call fflush. */
+#ifdef _XBOX
+        __atomic_store_n(&f->lock, __LOCK_NONE, __ATOMIC_RELEASE);
+#else
+        f->lock = __LOCK_NONE;
+#endif
+        __lock_close_recursive(lock);
     }
 #endif
     return ret;

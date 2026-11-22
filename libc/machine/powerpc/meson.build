@@ -61,4 +61,19 @@ srcs_machine = [
 
 subdir('machine')
 
+if meson.get_external_property('picolibc_xbox360', false)
+  srcs_machine += [
+    'machine/clock.c',
+    'machine/error.c',
+    'machine/exit.c',
+    'machine/io.c',
+    'machine/lock.c',
+    'machine/mman.c',
+    'machine/pthread.c',
+    'machine/thread_done.c',
+    'machine/sched.c',
+    'machine/sleep.c',
+  ]
+endif
+
 src_machine = files(srcs_machine)

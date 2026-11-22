@@ -36,10 +36,15 @@
 
 #define PPC_BIT(bit)            (0x8000000000000000ULL >> (bit))
 	.text
+#ifndef _XBOX
 	.section	.text.init.enter
+#endif /* _XBOX */
 	.global _start
+#ifndef _XBOX
 	.type	_start, @function
+#endif /* _XBOX */
 _start:
+#ifndef _XBOX
 	/* Get stack pointer */
 	lis	%r1,__stack@h
 	ori	%r1,%r1,__stack@l
@@ -61,15 +66,20 @@ here:	mflr	%r2
 	/* Enable Altivec */
 	oris	%r0,%r0,PPC_BIT(38)>>16
 	mtmsr	%r0
-
+#endif /* _XBOX */
 	/*
 	 *   r8 is the OPAL base
 	 *   r9 is the OPAL entry point point
 	 */
+#ifndef _XBOX
 	mr	%r3, %r8
 	mr	%r4, %r9
+#else
+	li	%r3, 0
+	li	%r4, 0
+#endif /* _XBOX */
 	bl	_cstart
-#ifdef __PPC64__
+#if defined(__PPC64__) && !defined(_XBOX)
 	.align	3
 toc:	
 	.quad 	.TOC.@tocbase

@@ -61,14 +61,14 @@ int sched_get_priority_min(int __policy);
 int sched_rr_get_interval(pid_t __pid, struct timespec *__interval);
 #endif /* _POSIX_PRIORITY_SCHEDULING */
 
-#if defined(_POSIX_THREADS) || defined(_POSIX_PRIORITY_SCHEDULING)
+#if defined(_POSIX_THREADS) || defined(_POSIX_PRIORITY_SCHEDULING) || defined(_XBOX)
 
 /*
  *  XBD 13 - Yield Processor, P1003.1b-2008, p. 1807
  */
 int sched_yield(void);
 
-#endif /* _POSIX_THREADS or _POSIX_PRIORITY_SCHEDULING */
+#endif /* _POSIX_THREADS, _POSIX_PRIORITY_SCHEDULING, or _XBOX */
 
 #if __GNU_VISIBLE
 int sched_getcpu(void);

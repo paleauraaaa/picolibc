@@ -966,7 +966,7 @@ foreach params : [default_target] + targets
       picolibcpp_linux_ld_variable = 'picolibcpp_linux_ld'
       picolibcpp_linux_ld_config_variable = 'picolibcpp_linux_ld_config'
 
-      picolibc_ld_install = true
+      picolibc_ld_install = not meson.get_external_property('picolibc_xbox360', false)
 
       if thread_local_storage
         picolibc_inittls_ld_file = 'picolibc_inittls.ld'

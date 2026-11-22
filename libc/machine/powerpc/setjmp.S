@@ -21,7 +21,20 @@ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 #include <picolibc.h>
 
+#ifndef _XBOX
 #include "ppc-asm.h"
+#else
+#define FUNC_START(name) \
+    .text;               \
+    .p2align 4;          \
+    .globl name;         \
+    .def name; .scl 2; .type 32; .endef; \
+	/* .scl 2   = external symbol    */  \
+ 	/* .type 32 = COFF function type */  \ 
+name:
+
+#define FUNC_END(name)
+#endif
 
 FUNC_START(setjmp)
 #ifdef __ALTIVEC__
@@ -71,9 +84,13 @@ FUNC_START(setjmp)
 	/* In the first store, add 8 to r3 so that the subsequent floating
 	   point stores are aligned on an 8 byte boundary and the Altivec
 	   stores are aligned on a 16 byte boundary.  */
+#ifndef _XBOX   
 	stdu	1,8(3)		# offset 8
 	stdu	2,8(3)		# offset 16
 	stdu	13,8(3)		# offset 24
+#else
+    std     1,0(3)
+#endif
 	stdu	14,8(3)		# offset 32
 	stdu	15,8(3)		# offset 40
 	stdu	16,8(3)		# offset 48
@@ -93,9 +110,17 @@ FUNC_START(setjmp)
 	stdu	30,8(3)		# offset 160
 	stdu	31,8(3)		# offset 168
 	mflr	4
+#ifndef _XBOX
 	stdu	4,8(3)		# offset 176
+#else 
+	stwu    4,4(3)		# offset 184
+#endif
 	mfcr	4
-	stwu	4,8(3)		# offset 184
+#ifndef _XBOX
+	stwu    4,8(3)
+#else
+	stwu	4,4(3)		# offset 184
+#endif
 #else
 	stw	1,0(3)		# offset 0
 	stwu	2,4(3)		# offset 4
@@ -180,6 +205,7 @@ FUNC_START(setjmp)
 	andis.	5,5,0x200
 	beq	1f
 #endif
+#ifndef __VMX128__
 	/* save Altivec vrsave and vr20-vr31 registers */
 	mfspr	4,256		# vrsave register
 	stwu	4,16(3)		# offset 248
@@ -207,6 +233,136 @@ FUNC_START(setjmp)
 	stvx	30,0,3		# offset 416
 	addi	3,3,16
 	stvx	31,0,3		# offset 432
+#else 
+    addi	3,3,8
+	stvx128	64,0,3
+	addi	3,3,16
+	stvx128	65,0,3
+	addi	3,3,16
+	stvx128	66,0,3
+	addi	3,3,16
+	stvx128	67,0,3
+	addi	3,3,16
+	stvx128	68,0,3
+	addi	3,3,16
+	stvx128	69,0,3
+	addi	3,3,16
+	stvx128	70,0,3
+	addi	3,3,16
+	stvx128	71,0,3
+	addi	3,3,16
+	stvx128	72,0,3
+	addi	3,3,16
+	stvx128	73,0,3
+	addi	3,3,16
+	stvx128	74,0,3
+	addi	3,3,16
+	stvx128	75,0,3
+	addi	3,3,16
+	stvx128	76,0,3
+	addi	3,3,16
+	stvx128	77,0,3
+	addi	3,3,16
+	stvx128	78,0,3
+	addi	3,3,16
+	stvx128	79,0,3
+	addi	3,3,16
+	stvx128	80,0,3
+	addi	3,3,16
+	stvx128	81,0,3
+	addi	3,3,16
+	stvx128	82,0,3
+	addi	3,3,16
+	stvx128	83,0,3
+	addi	3,3,16
+	stvx128	84,0,3
+	addi	3,3,16
+	stvx128	85,0,3
+	addi	3,3,16
+	stvx128	86,0,3
+	addi	3,3,16
+	stvx128	87,0,3
+	addi	3,3,16
+	stvx128	88,0,3
+	addi	3,3,16
+	stvx128	89,0,3
+	addi	3,3,16
+	stvx128	90,0,3
+	addi	3,3,16
+	stvx128	91,0,3
+	addi	3,3,16
+	stvx128	92,0,3
+	addi	3,3,16
+	stvx128	93,0,3
+	addi	3,3,16
+	stvx128	94,0,3
+	addi	3,3,16
+	stvx128	95,0,3
+	addi	3,3,16
+	stvx128	96,0,3
+	addi	3,3,16
+	stvx128	97,0,3
+	addi	3,3,16
+	stvx128	98,0,3
+	addi	3,3,16
+	stvx128	99,0,3
+	addi	3,3,16
+	stvx128	100,0,3
+	addi	3,3,16
+	stvx128	101,0,3
+	addi	3,3,16
+	stvx128	102,0,3
+	addi	3,3,16
+	stvx128	103,0,3
+	addi	3,3,16
+	stvx128	104,0,3
+	addi	3,3,16
+	stvx128	105,0,3
+	addi	3,3,16
+	stvx128	106,0,3
+	addi	3,3,16
+	stvx128	107,0,3
+	addi	3,3,16
+	stvx128	108,0,3
+	addi	3,3,16
+	stvx128	109,0,3
+	addi	3,3,16
+	stvx128	110,0,3
+	addi	3,3,16
+	stvx128	111,0,3
+	addi	3,3,16
+	stvx128	112,0,3
+	addi	3,3,16
+	stvx128	113,0,3
+	addi	3,3,16
+	stvx128	114,0,3
+	addi	3,3,16
+	stvx128	115,0,3
+	addi	3,3,16
+	stvx128	116,0,3
+	addi	3,3,16
+	stvx128	117,0,3
+	addi	3,3,16
+	stvx128	118,0,3
+	addi	3,3,16
+	stvx128	119,0,3
+	addi	3,3,16
+	stvx128	120,0,3
+	addi	3,3,16
+	stvx128	121,0,3
+	addi	3,3,16
+	stvx128	122,0,3
+	addi	3,3,16
+	stvx128	123,0,3
+	addi	3,3,16
+	stvx128	124,0,3
+	addi	3,3,16
+	stvx128	125,0,3
+	addi	3,3,16
+	stvx128	126,0,3
+	addi	3,3,16
+	stvx128	127,0,3
+#endif /* _XBOX */
 1:
 
 	/* This requires a total of 240 + 8 + 8 + 12 * 16 == 448 bytes. */
@@ -264,9 +420,13 @@ FUNC_START(longjmp)
 	/* In the first load, add 8 to r3 so that the subsequent floating
 	   point loades are aligned on an 8 byte boundary and the Altivec
 	   loads are aligned on a 16 byte boundary.  */
+#ifndef _XBOX
 	ldu	1,8(3)		# offset 8
 	ldu	2,8(3)		# offset 16
 	ldu	13,8(3)		# offset 24
+#else
+	ld 1,0(3)
+#endif
 	ldu	14,8(3)		# offset 32
 	ldu	15,8(3)		# offset 40
 	ldu	16,8(3)		# offset 48
@@ -285,9 +445,17 @@ FUNC_START(longjmp)
 	ldu	29,8(3)		# offset 152
 	ldu	30,8(3)		# offset 160
 	ldu	31,8(3)		# offset 168
+#ifndef _XBOX
 	ldu	5,8(3)		# offset 176
+#else
+	lwzu	5,4(3)
+#endif
 	mtlr	5
+#ifndef _XBOX
 	lwzu	5,8(3)		# offset 184
+#else
+	lwzu	5,4(3)
+#endif
 	mtcrf	255,5
 #else
 	lwz	1,0(3)		# offset 0 
@@ -362,12 +530,13 @@ FUNC_START(longjmp)
 1:
 #endif
 
-#ifdef __ALTIVEC__
+#if defined (__ALTIVEC__)
 #if defined (__rtems__) && !defined (__PPC_CPU_E6500__)
 	mfmsr	5
 	andis.	5,5,0x200
 	beq	1f
 #endif
+#if !defined (__VMX128__)
 	/* restore Altivec vrsave and v20-v31 registers */
 	lwzu	5,16(3)		# offset 248
 	mtspr	256,5		# vrsave
@@ -395,6 +564,136 @@ FUNC_START(longjmp)
 	lvx	30,0,3		# offset 416
 	addi	3,3,16
 	lvx	31,0,3		# offset 432
+#else
+    addi	3,3,8
+    lvx128	64,0,3		
+	addi	3,3,16
+	lvx128	65,0,3		
+	addi	3,3,16
+	lvx128	66,0,3		
+	addi	3,3,16
+	lvx128	67,0,3		
+	addi	3,3,16
+	lvx128	68,0,3		
+	addi	3,3,16
+	lvx128	69,0,3		
+	addi	3,3,16
+	lvx128	70,0,3		
+	addi	3,3,16
+	lvx128	71,0,3		
+	addi	3,3,16
+	lvx128	72,0,3		
+	addi	3,3,16
+	lvx128	73,0,3		
+	addi	3,3,16
+	lvx128	74,0,3		
+	addi	3,3,16
+	lvx128	75,0,3		
+	addi	3,3,16
+	lvx128	76,0,3		
+	addi	3,3,16
+	lvx128	77,0,3		
+	addi	3,3,16
+	lvx128	78,0,3		
+	addi	3,3,16
+	lvx128	79,0,3		
+	addi	3,3,16
+	lvx128	80,0,3		
+	addi	3,3,16
+	lvx128	81,0,3		
+	addi	3,3,16
+	lvx128	82,0,3		
+	addi	3,3,16
+	lvx128	83,0,3		
+	addi	3,3,16
+	lvx128	84,0,3		
+	addi	3,3,16
+	lvx128	85,0,3		
+	addi	3,3,16
+	lvx128	86,0,3		
+	addi	3,3,16
+	lvx128	87,0,3		
+	addi	3,3,16
+	lvx128	88,0,3		
+	addi	3,3,16
+	lvx128	89,0,3		
+	addi	3,3,16
+	lvx128	90,0,3		
+	addi	3,3,16
+	lvx128	91,0,3		
+	addi	3,3,16
+	lvx128	92,0,3		
+	addi	3,3,16
+	lvx128	93,0,3		
+	addi	3,3,16
+	lvx128	94,0,3		
+	addi	3,3,16
+	lvx128	95,0,3		
+	addi	3,3,16
+	lvx128	96,0,3		
+	addi	3,3,16
+	lvx128	97,0,3		
+	addi	3,3,16
+	lvx128	98,0,3		
+	addi	3,3,16
+	lvx128	99,0,3		
+	addi	3,3,16
+	lvx128	100,0,3		
+	addi	3,3,16
+	lvx128	101,0,3		
+	addi	3,3,16
+	lvx128	102,0,3		
+	addi	3,3,16
+	lvx128	103,0,3		
+	addi	3,3,16
+	lvx128	104,0,3		
+	addi	3,3,16
+	lvx128	105,0,3		
+	addi	3,3,16
+	lvx128	106,0,3		
+	addi	3,3,16
+	lvx128	107,0,3		
+	addi	3,3,16
+	lvx128	108,0,3		
+	addi	3,3,16
+	lvx128	109,0,3		
+	addi	3,3,16
+	lvx128	110,0,3		
+	addi	3,3,16
+	lvx128	111,0,3		
+	addi	3,3,16
+	lvx128	112,0,3		
+	addi	3,3,16
+	lvx128	113,0,3		
+	addi	3,3,16
+	lvx128	114,0,3		
+	addi	3,3,16
+	lvx128	115,0,3		
+	addi	3,3,16
+	lvx128	116,0,3		
+	addi	3,3,16
+	lvx128	117,0,3		
+	addi	3,3,16
+	lvx128	118,0,3		
+	addi	3,3,16
+	lvx128	119,0,3		
+	addi	3,3,16
+	lvx128	120,0,3		
+	addi	3,3,16
+	lvx128	121,0,3		
+	addi	3,3,16
+	lvx128	122,0,3		
+	addi	3,3,16
+	lvx128	123,0,3		
+	addi	3,3,16
+	lvx128	124,0,3		
+	addi	3,3,16
+	lvx128	125,0,3		
+	addi	3,3,16
+	lvx128	126,0,3		
+	addi	3,3,16
+	lvx128	127,0,3
+#endif /* __VMX128__ */
 1:
 #endif
 

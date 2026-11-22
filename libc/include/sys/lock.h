@@ -40,6 +40,11 @@ void                   __retarget_lock_acquire_recursive(_LOCK_T lock) __acquire
 void                   __retarget_lock_release(_LOCK_T lock) __release_capability(lock);
 void                   __retarget_lock_release_recursive(_LOCK_T lock) __release_capability(lock);
 
+#ifdef _XBOX
+void                   __xbox_libc_lock_init(void);
+int                    __xbox_lock_try_acquire(_LOCK_T lock);
+#endif
+
 #define __lock_init(lock)              __retarget_lock_init(&lock)
 #define __lock_init_recursive(lock)    __retarget_lock_init_recursive(&lock)
 #define __lock_close(lock)             __retarget_lock_close(lock)

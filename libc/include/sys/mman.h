@@ -69,6 +69,9 @@ typedef __off_t off_t;
 #if __GNU_VISIBLE
 #define MAP_ANON MAP_ANONYMOUS
 #endif
+#ifdef _XBOX
+#define MAP_LARGE_PAGES   0x040
+#endif
 
 /*
  * Error return value from mmap().

@@ -77,7 +77,11 @@ int  __cxa_at_quick_exit(void (*func)(void *), void *arg, void *d);
 void __libc_fini_array(void);
 
 #ifndef __INIT_FINI_ARRAY
+#ifdef _XBOX
+void __call_exitprocs(int code, void *param);
+#else
 void __call_exitprocs(int code, void *param) __weak;
+#endif
 #endif
 
 #endif

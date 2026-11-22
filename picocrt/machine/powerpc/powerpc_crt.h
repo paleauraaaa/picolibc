@@ -33,5 +33,7 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _XBOX
 extern void *__opal_base, *__opal_entry;
 extern char  __plt_start[], __iplt_start[], __plt_size[];
+#endif

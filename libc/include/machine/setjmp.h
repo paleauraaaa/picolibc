@@ -190,7 +190,10 @@ _BEGIN_STD_C
 
 #ifdef __PPC__
 #ifdef __powerpc64__
-#ifdef __ALTIVEC__
+#ifdef __VMX128__
+#define _JBLEN 166
+#define _JBALIGN 16
+#elif defined (__ALTIVEC__)
 #define _JBLEN 70
 #else
 #define _JBLEN 43
@@ -464,9 +467,13 @@ _BEGIN_STD_C
 #endif
 #endif
 
+#ifndef _JBALIGN
+#define _JBALIGN __alignof__(_JBTYPE)
+#endif
+
 #ifdef _JBLEN
 #ifdef _JBTYPE
-typedef _JBTYPE jmp_buf[_JBLEN];
+typedef _JBTYPE jmp_buf[_JBLEN] __attribute__((__aligned__(_JBALIGN)));
 #else
 typedef int jmp_buf[_JBLEN];
 #endif

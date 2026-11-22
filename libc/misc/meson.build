@@ -39,9 +39,12 @@ srcs_misc = [
   'fini.c',
   'init.c',
   'inittls.c',
-  'lock.c',
   'unctrl.c',
 ]
+
+if not meson.get_external_property('picolibc_xbox360', false)
+  srcs_misc += ['lock.c']
+endif
 
 srcs_misc_use = []
 foreach file : srcs_misc

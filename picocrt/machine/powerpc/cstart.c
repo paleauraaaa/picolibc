@@ -37,6 +37,7 @@
 #include <stddef.h>
 #include "powerpc_crt.h"
 
+#ifndef _XBOX
 struct function_descriptor {
     void *entry;
     void *toc;
@@ -60,16 +61,30 @@ post_memory_setup(void)
 }
 
 #define POST_MEMORY_SETUP() post_memory_setup()
+#endif /* _XBOX */
 
 #include "../../crt0.h"
 
+#ifdef _XBOX
+__attribute__((section(".CRT$XCA"), used))
+init_fn __pico_xc_a[1] = { NULL };
+
+__attribute__((section(".CRT$XCZ"), used))
+init_fn __pico_xc_z[1] = { NULL };
+
+#pragma comment(linker, "/alternatename:__xc_a=__pico_xc_a")
+#pragma comment(linker, "/alternatename:__xc_z=__pico_xc_z")
+#else
 void *__opal_base __attribute__((section(".preserve")));
 void *__opal_entry __attribute__((section(".preserve")));
 
-void __used __section(".init")
-_cstart(void *opal_base, void *opal_entry)
+__used __section(".init")
+#endif /* _XBOX */
+void _cstart(void *opal_base, void *opal_entry)
 {
+#ifndef _XBOX
     __opal_base = opal_base;
     __opal_entry = opal_entry;
+#endif /* _XBOX */
     __start();
 }

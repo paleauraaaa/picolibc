@@ -111,6 +111,10 @@ endif
 
 inc_headers += ['picotls.h']
 
+if meson.get_external_property('picolibc_xbox360', false)
+  inc_headers += ['pthread.h']
+endif
+
 if enable_libdl
   inc_headers += ['dlfcn.h']
 endif

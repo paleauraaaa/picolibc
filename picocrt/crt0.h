@@ -54,6 +54,15 @@ extern char __tls_base[];
 extern char __tdata_end[];
 extern char __tls_end[];
 
+#ifdef _XBOX
+#include <xboxkrnl.h>
+#include <sys/lock.h>
+
+typedef void (*init_fn)(void);
+extern init_fn __xc_a[];
+extern init_fn __xc_z[];
+#endif
+
 #ifdef __PICOCRT_RUNTIME_SIZE
 #define __data_size (__data_end - __data_start)
 #define __bss_size  (__bss_end - __bss_start)
@@ -70,6 +79,11 @@ int  main(int, char **);
 
 #ifdef __INIT_FINI_ARRAY
 extern void __libc_init_array(void);
+#endif
+
+#ifdef _XBOX
+extern CRITICAL_SECTION mmap_lock;
+extern void __libc_xbox_lock_init(void);
 #endif
 
 /* After the architecture-specific chip initialization is done, this
@@ -107,22 +121,35 @@ __start(void)
     /* Initialize .data from FLASH when enabled */
     memcpy(__data_start, __data_source, (uintptr_t)__data_size);
 #endif
-#ifndef CRT0_LINUX
+#if !defined(CRT0_LINUX) && !defined(_XBOX)
     memset(__bss_start, '\0', (uintptr_t)__bss_size);
 #endif
 #ifdef POST_MEMORY_SETUP
     POST_MEMORY_SETUP();
 #endif
 
-#ifdef __THREAD_LOCAL_STORAGE
+#if defined(__THREAD_LOCAL_STORAGE) && !defined(_XBOX)
 #ifdef INIT_TLS
     _init_tls(__tls_base);
 #endif
     _set_tls(__tls_base);
 #endif
 
+#ifdef _XBOX
+#ifndef __SINGLE_THREAD
+    __xbox_libc_lock_init();
+    __xbox_thread_init();
+#endif
+    RtlInitializeCriticalSection(&mmap_lock);
+#endif
+
 #if defined(__INIT_FINI_ARRAY) && CONSTRUCTORS
     __libc_init_array();
+#elif defined(_XBOX) && CONSTRUCTORS
+    for (init_fn *fn = __xc_a + 1; fn != __xc_z; ++fn) {
+        if (*fn)
+            (*fn)();
+    }
 #endif
 
 #if defined(CRT0_GET_CMDLINE) || (defined(CRT0_SEMIHOST) && defined(__ARM_SEMIHOST))
@@ -165,7 +192,6 @@ __start(void)
 #define argv NULL
 #endif
 #endif
-
     int ret = main(argc, argv);
 #ifdef CRT0_EXIT
     exit(ret);

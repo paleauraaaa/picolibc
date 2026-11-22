@@ -53,7 +53,7 @@
 #define __THROW
 #endif
 
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(__clang__)
 #define __ASMNAME(cname) __XSTRING(__USER_LABEL_PREFIX__) cname
 #define _ASMNAME(cname)  __asm__(__ASMNAME(cname))
 #else
@@ -518,7 +518,7 @@
  * __XSTRING is like __STRING, but it expands any macros in its argument
  * first.  It is only available with ANSI C.
  */
-#if defined(__STDC__) || defined(__cplusplus)
+#if defined(__STDC__) || defined(__cplusplus) || defined(__clang__)
 #define __CONCAT1(x, y) x##y
 #define __CONCAT(x, y)  __CONCAT1(x, y)
 #define __STRING(x)     #x /* stringify without expanding x */

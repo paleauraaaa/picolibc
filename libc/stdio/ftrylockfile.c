@@ -35,13 +35,29 @@
 
 #include "local-stdio.h"
 
-/*
- * We don't have any try-lock ability in the picolibc lock API, so
- * we're stuck just blocking.
- */
 int
 ftrylockfile(FILE *f) __stdio_try_acquire_file(0, f) __no_thread_safety_analysis
 {
+#if defined(_XBOX) && !defined(__SINGLE_THREAD)
+#ifdef __STDIO_LOCKING
+    _LOCK_RECURSIVE_T lock = __stdio_get_lock(f);
+    if (lock == __LOCK_NONE)
+        return 0;
+
+    if ( __xbox_lock_try_acquire(lock))
+        return 0;
+
+    return -1;
+#else
+    (void)f;
+
+    if (__xbox_lock_try_acquire(&__lock___libc_recursive_mutex))
+        return 0;
+        
+    return -1;
+#endif
+#else
+    /* The generic retarget API has no try-lock hook. */
 #ifdef __STDIO_LOCKING
     __flockfile(f);
 #else
@@ -49,4 +65,5 @@ ftrylockfile(FILE *f) __stdio_try_acquire_file(0, f) __no_thread_safety_analysis
     __LIBC_LOCK();
 #endif
     return 0;
+#endif
 }

@@ -39,6 +39,14 @@
 void
 __flockfile_init(FILE *f)
 {
+#ifdef _XBOX
+    _LOCK_RECURSIVE_T lock, expected = NULL;
+
+    __lock_init_recursive(lock);
+    if (!__atomic_compare_exchange_n(&f->lock, &expected, lock, false,
+                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+        __lock_close_recursive(lock);
+#else
     /*
      * Use the global C library lock to ensure this
      * only initializes the lock once
@@ -47,5 +55,6 @@ __flockfile_init(FILE *f)
     if (!f->lock)
         __lock_init_recursive(f->lock);
     __LIBC_UNLOCK();
+#endif
 }
 #endif

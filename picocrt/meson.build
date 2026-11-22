@@ -173,6 +173,19 @@ if host_cpu_family == 'riscv'
   }
 endif
 
+if meson.get_external_property('picolibc_xbox360', false)
+  # COFF has no relocatable link; keep the two startup objects in an archive.
+  foreach params : targets
+    static_library('crt0',
+                   src_picocrt,
+                   include_directories : inc,
+                   c_args : params['c_args'] + arg_fnobuiltin + ['-D_LIBC', '-ffreestanding', '-DNO_FLASH', '-DCRT0_EXIT'],
+                   install : really_install,
+                   install_dir : join_paths(lib_dir, params['dir']))
+  endforeach
+  subdir_done()
+endif
+
 foreach params : targets
   target = params['name']
   target_dir = params['dir']

@@ -234,7 +234,7 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 #define __IEEE_BIG_ENDIAN
 #endif
 
-#ifdef _WIN32
+#if defined (_WIN32) && (!defined (_XBOX_VER) || _XBOX_VER < 200)
 #define __IEEE_LITTLE_ENDIAN
 #endif
 

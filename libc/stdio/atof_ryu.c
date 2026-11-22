@@ -28,7 +28,7 @@
 #define FLOAT_EXPONENT_BITS 8
 #define FLOAT_EXPONENT_BIAS 127
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 
 static inline uint32_t
