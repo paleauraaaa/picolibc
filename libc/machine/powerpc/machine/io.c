@@ -1,6 +1,8 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <unistd.h>
@@ -14,22 +16,386 @@
 #define MAX_FD 1024
 #endif
 
+static char s_cwd[PATH_MAX + 1] = "";
+static pthread_mutex_t s_cwd_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int s_cwd_fd = -1;
+
+static int
+is_absolute_path(const char *path)
+{
+    const char *separator;
+    const char *colon = strchr(path, ':');
+
+    if (path[0] == '/' || path[0] == '\\')
+        return 1;
+    if (colon == NULL || colon == path)
+        return 0;
+
+    separator = strpbrk(path, "/\\");
+    return (separator == NULL || colon < separator) &&
+           (colon[1] == '/' || colon[1] == '\\');
+}
+
+static int
+is_path_separator(char ch)
+{
+    return ch == '/' || ch == '\\';
+}
+
+static int
+normalize_path(char *path, size_t capacity, size_t *normalized_length)
+{
+    size_t path_length = strlen(path);
+    size_t read_index = 0;
+    size_t write_index = 0;
+    size_t protected_length = 0;
+    int posix_absolute = path[0] == '/';
+    int rooted_path = path[0] == '\\';
+    int relative_path = !posix_absolute && !rooted_path;
+    char separator = relative_path ? '/' : (posix_absolute ? '/' : '\\');
+
+    if (path_length == 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (path_length >= capacity) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    if (posix_absolute) {
+        path[write_index++] = '/';
+        read_index = 1;
+        protected_length = write_index;
+    } else if (rooted_path) {
+        path[write_index++] = '\\';
+        read_index = 1;
+        while (read_index < path_length &&
+               is_path_separator(path[read_index]))
+            read_index++;
+        protected_length = write_index;
+    } else {
+        char *colon = strchr(path, ':');
+        char *first_separator = strpbrk(path, "/\\");
+
+        if (colon != NULL && colon != path &&
+            (first_separator == NULL || colon < first_separator) &&
+            is_path_separator(colon[1])) {
+            size_t volume_length = colon - path;
+            path[volume_length + 1] = '\\';
+            write_index = volume_length + 2;
+            read_index = write_index;
+            protected_length = write_index;
+            relative_path = 0;
+            separator = '\\';
+        }
+    }
+
+    while (read_index < path_length) {
+        while (read_index < path_length &&
+               is_path_separator(path[read_index]))
+            read_index++;
+        if (read_index == path_length)
+            break;
+
+        size_t component_start = read_index;
+        while (read_index < path_length &&
+               !is_path_separator(path[read_index]))
+            read_index++;
+        size_t component_length = read_index - component_start;
+
+        if (component_length == 1 && path[component_start] == '.')
+            continue;
+
+        if (component_length == 2 &&
+            path[component_start] == '.' &&
+            path[component_start + 1] == '.') {
+            size_t last_component_start = write_index;
+            while (last_component_start > 0 &&
+                   !is_path_separator(path[last_component_start - 1]))
+                last_component_start--;
+            size_t last_component_length =
+                write_index - last_component_start;
+            int last_is_parent = relative_path &&
+                last_component_length == 2 &&
+                path[last_component_start] == '.' &&
+                path[last_component_start + 1] == '.';
+
+            if (write_index > protected_length && !last_is_parent) {
+                while (write_index > protected_length &&
+                       !is_path_separator(path[write_index - 1]))
+                    write_index--;
+                if (write_index > protected_length &&
+                    is_path_separator(path[write_index - 1]))
+                    write_index--;
+            } else if (relative_path) {
+                if (write_index != 0)
+                    path[write_index++] = separator;
+                path[write_index++] = '.';
+                path[write_index++] = '.';
+            }
+            continue;
+        }
+
+        if (write_index != 0 &&
+            !is_path_separator(path[write_index - 1]))
+            path[write_index++] = separator;
+        memmove(path + write_index, path + component_start, component_length);
+        write_index += component_length;
+
+        if (posix_absolute && protected_length == 1)
+            protected_length = write_index;
+    }
+
+    if (relative_path && write_index == 0)
+        path[write_index++] = '.';
+    path[write_index] = '\0';
+    if (normalized_length != NULL)
+        *normalized_length = write_index;
+    return 0;
+}
+
+static int
+append_cwd_path(const char *path, char *resolved_path, size_t capacity,
+                size_t *resolved_length)
+{
+    size_t cwd_length = strlen(s_cwd);
+    size_t path_length = strlen(path);
+    size_t separator_length;
+
+    if (s_cwd_fd == -1 || cwd_length == 0 || path_length == 0) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    if (cwd_length >= capacity || path_length >= capacity) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    separator_length = s_cwd[cwd_length - 1] == '/' ||
+                       s_cwd[cwd_length - 1] == '\\' ? 0 : 1;
+    if (separator_length > capacity - cwd_length - 1 ||
+        path_length > capacity - cwd_length - separator_length - 1) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    memcpy(resolved_path, s_cwd, cwd_length);
+    if (separator_length != 0)
+        resolved_path[cwd_length] = '/';
+    memcpy(resolved_path + cwd_length + separator_length, path, path_length);
+    size_t length = cwd_length + separator_length + path_length;
+    resolved_path[length] = '\0';
+    return normalize_path(resolved_path, capacity, resolved_length);
+}
+
+char *
+getcwd(char *buf, size_t size)
+{
+    int allocated = buf == NULL;
+
+    pthread_mutex_lock(&s_cwd_mutex);
+    if (allocated) {
+        if (size == 0)
+            size = PATH_MAX + 1;
+        buf = malloc(size);
+        if (buf == NULL) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            return NULL;
+        }
+    }
+
+    if (size == 0 || s_cwd_fd == -1 || s_cwd[0] == '\0') {
+        int error = s_cwd_fd == -1 || s_cwd[0] == '\0' ? ENOENT : ERANGE;
+        if (allocated)
+            free(buf);
+        pthread_mutex_unlock(&s_cwd_mutex);
+        errno = error;
+        return NULL;
+    }
+
+    size_t cwd_length = strlen(s_cwd);
+    if (cwd_length >= size) {
+        if (allocated)
+            free(buf);
+        pthread_mutex_unlock(&s_cwd_mutex);
+        errno = ERANGE;
+        return NULL;
+    }
+
+    memcpy(buf, s_cwd, cwd_length + 1);
+    pthread_mutex_unlock(&s_cwd_mutex);
+    return buf;
+}
+
+int chdir(const char* path) {
+    if (path == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    pthread_mutex_lock(&s_cwd_mutex);
+    char new_cwd_path[PATH_MAX + 1];
+    size_t len;
+    if (is_absolute_path(path)) {
+        len = strlen(path);
+        if (len >= PATH_MAX) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(new_cwd_path, path, len + 1);
+        if (normalize_path(new_cwd_path, sizeof(new_cwd_path), &len) == -1) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            return -1;
+        }
+    } else {
+        if (append_cwd_path(path, new_cwd_path, sizeof(new_cwd_path), &len) == -1) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            return -1;
+        }
+        if (len >= PATH_MAX) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+    }
+
+    int new_cwd = open(new_cwd_path, O_RDWR | O_DIRECTORY);
+    if (new_cwd == -1) {
+        pthread_mutex_unlock(&s_cwd_mutex);
+        return -1;
+    }
+    if (s_cwd_fd != -1) {
+        if (close(s_cwd_fd) == -1) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            return -1;
+        }
+        s_cwd_fd = -1;
+    }
+    s_cwd_fd = new_cwd;
+    memcpy(s_cwd, new_cwd_path, len + 1);
+    pthread_mutex_unlock(&s_cwd_mutex);
+    return 0;
+}
+
 typedef struct file_descriptor {
     HANDLE          handle;
     ACCESS_MASK     access;
     off_t           off;
 } file_descriptor;
 
-static file_descriptor s_fds[MAX_FD] = { { NULL, 0, 0 } };
+static file_descriptor s_fds[MAX_FD - 3] = { { NULL, 0, 0 } };
 
 int open(const char* path, int flags, ...) {
+    return openat(AT_FDCWD, path, flags);
+}
+
+static int
+translate_path(const char *path, char *native_path, size_t capacity,
+               size_t *translated_length)
+{
+    size_t path_length = strlen(path);
+    size_t output_length = path_length;
+    const char *tail = path;
+    size_t volume_length = 0;
+    int posix_absolute = path[0] == '/';
+
+    if (path_length == 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (path_length > PATH_MAX) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    if (posix_absolute) {
+        /* The first POSIX path component names the Xbox volume. */
+        const char *volume = path + 1;
+        const char *separator = strchr(volume, '/');
+
+        volume_length = separator ? (size_t)(separator - volume) : path_length - 1;
+        if (volume_length == 0 || memchr(volume, ':', volume_length) != NULL) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        tail = separator ? separator + 1 : path + path_length;
+        output_length = volume_length + 2 + strlen(tail);
+    }
+
+    if (output_length >= capacity || output_length >= USHORT_MAX) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    size_t output_index = 0;
+    if (posix_absolute) {
+        memcpy(native_path, path + 1, volume_length);
+        output_index = volume_length;
+        native_path[output_index++] = ':';
+        native_path[output_index++] = '\\';
+    }
+
+    while (*tail != '\0') {
+        char ch = *tail++;
+        native_path[output_index++] = ch == '/' ? '\\' : ch;
+    }
+    native_path[output_index] = '\0';
+    *translated_length = output_index;
+    return 0;
+}
+
+int openat(int dirfd, const char* path, int flags, ...) {
     if (path == NULL) {
         errno = EFAULT;
         return -1;
     }
 
+    char cwd_path[PATH_MAX + 1];
+    const char *path_to_open = path;
+    int absolute_path = is_absolute_path(path);
+    if (!absolute_path && dirfd == AT_FDCWD) {
+        pthread_mutex_lock(&s_cwd_mutex);
+        if (append_cwd_path(path, cwd_path, sizeof(cwd_path), NULL) == -1) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            return -1;
+        }
+        pthread_mutex_unlock(&s_cwd_mutex);
+        path_to_open = cwd_path;
+        absolute_path = 1;
+    } else {
+        size_t path_length = strlen(path);
+        if (path_length >= sizeof(cwd_path)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(cwd_path, path, path_length + 1);
+        if (normalize_path(cwd_path, sizeof(cwd_path), NULL) == -1)
+            return -1;
+        path_to_open = cwd_path;
+    }
+
+    HANDLE root_directory = NULL;
+    if (!absolute_path) {
+        int root_fd;
+        if (dirfd < 3 || dirfd >= MAX_FD) {
+            errno = EBADF;
+            return -1;
+        }
+        root_fd = dirfd;
+        int root_index = root_fd - 3;
+        if (root_index >= MAX_FD - 3 || s_fds[root_index].handle == NULL) {
+            errno = EBADF;
+            return -1;
+        }
+        root_directory = s_fds[root_index].handle;
+    }
+
     int fd = -1;
-    for (int i = 0; i < MAX_FD; i++) {
+    for (int i = 0; i < MAX_FD - 3; i++) {
         if (s_fds[i].handle == NULL) {
             fd = i;
             break;
@@ -40,26 +406,21 @@ int open(const char* path, int flags, ...) {
         return -1;
     }
 
-    PHANDLE pHandle = &s_fds[fd].handle;
+    char native_path[PATH_MAX + 1];
+    size_t len;
+    if (translate_path(path_to_open, native_path, sizeof(native_path), &len) == -1)
+        return -1;
 
-    size_t len = strlen(path);
-    if (len == 0) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (len + 1 > USHORT_MAX) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
+    PHANDLE pHandle = &s_fds[fd].handle;
 
     ANSI_STRING ObjectName = {
         .Length = (USHORT)len,
         .MaximumLength = (USHORT)(len + 1),
-        .Buffer = (CHAR*)path
+        .Buffer = (CHAR*)native_path
     };
 
     X_OBJECT_ATTRIBUTES ObjectAttributes = {
-        .RootDirectory = NULL,
+        .RootDirectory = root_directory,
         .ObjectName = &ObjectName,
         .Attributes = 0
     };
@@ -141,7 +502,7 @@ int open(const char* path, int flags, ...) {
 
 int close (int fd) {
     fd -= 3;
-    if (fd < 0 || fd >= MAX_FD || s_fds[fd].handle == NULL) {
+    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
         errno = EBADF;
         return -1;
     }
@@ -158,7 +519,7 @@ int close (int fd) {
 
 off_t lseek(int fd, off_t offset, int whence) {
     fd -= 3;
-    if (fd < 0 || fd >= MAX_FD || s_fds[fd].handle == NULL) {
+    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
         errno = EBADF;
         return -1;
     }
@@ -199,7 +560,7 @@ off_t lseek(int fd, off_t offset, int whence) {
 
 ssize_t read(int fd, void *buf, size_t count) {
     fd -= 3;
-    if (fd < 0 || fd >= MAX_FD || s_fds[fd].handle == NULL) {
+    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
         errno = EBADF;
         return -1;
     }
@@ -246,7 +607,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     }
 
     fd -= 3;
-    if (fd < 0 || fd >= MAX_FD || s_fds[fd].handle == NULL) {
+    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
         errno = EBADF;
         return -1;
     }
