@@ -156,36 +156,36 @@ normalize_path(char *path, size_t capacity, size_t *normalized_length)
 }
 
 static int
-append_cwd_path(const char *path, char *resolved_path, size_t capacity,
-                size_t *resolved_length)
+append_path(const char *base_path, const char *path, char *resolved_path,
+            size_t capacity, size_t *resolved_length)
 {
-    size_t cwd_length = strlen(s_cwd);
+    size_t base_length = strlen(base_path);
     size_t path_length = strlen(path);
     size_t separator_length;
 
-    if (s_cwd_fd == -1 || cwd_length == 0 || path_length == 0) {
+    if (base_length == 0 || path_length == 0) {
         errno = ENOENT;
         return -1;
     }
 
-    if (cwd_length >= capacity || path_length >= capacity) {
+    if (base_length >= capacity || path_length >= capacity) {
         errno = ENAMETOOLONG;
         return -1;
     }
 
-    separator_length = s_cwd[cwd_length - 1] == '/' ||
-                       s_cwd[cwd_length - 1] == '\\' ? 0 : 1;
-    if (separator_length > capacity - cwd_length - 1 ||
-        path_length > capacity - cwd_length - separator_length - 1) {
+    separator_length = base_path[base_length - 1] == '/' ||
+                       base_path[base_length - 1] == '\\' ? 0 : 1;
+    if (separator_length > capacity - base_length - 1 ||
+        path_length > capacity - base_length - separator_length - 1) {
         errno = ENAMETOOLONG;
         return -1;
     }
 
-    memcpy(resolved_path, s_cwd, cwd_length);
+    memcpy(resolved_path, base_path, base_length);
     if (separator_length != 0)
-        resolved_path[cwd_length] = '/';
-    memcpy(resolved_path + cwd_length + separator_length, path, path_length);
-    size_t length = cwd_length + separator_length + path_length;
+        resolved_path[base_length] = '/';
+    memcpy(resolved_path + base_length + separator_length, path, path_length);
+    size_t length = base_length + separator_length + path_length;
     resolved_path[length] = '\0';
     return normalize_path(resolved_path, capacity, resolved_length);
 }
@@ -251,7 +251,9 @@ int chdir(const char* path) {
             return -1;
         }
     } else {
-        if (append_cwd_path(path, new_cwd_path, sizeof(new_cwd_path), &len) == -1) {
+        if (s_cwd_fd == -1 ||
+            append_path(s_cwd, path, new_cwd_path, sizeof(new_cwd_path),
+                        &len) == -1) {
             pthread_mutex_unlock(&s_cwd_mutex);
             return -1;
         }
@@ -284,9 +286,10 @@ typedef struct file_descriptor {
     HANDLE          handle;
     ACCESS_MASK     access;
     off_t           off;
+    char           *path;
 } file_descriptor;
 
-static file_descriptor s_fds[MAX_FD - 3] = { { NULL, 0, 0 } };
+static file_descriptor s_fds[MAX_FD - 3] = { { NULL, 0, 0, NULL } };
 
 int open(const char* path, int flags, ...) {
     return openat(AT_FDCWD, path, flags);
@@ -359,13 +362,32 @@ int openat(int dirfd, const char* path, int flags, ...) {
     int absolute_path = is_absolute_path(path);
     if (!absolute_path && dirfd == AT_FDCWD) {
         pthread_mutex_lock(&s_cwd_mutex);
-        if (append_cwd_path(path, cwd_path, sizeof(cwd_path), NULL) == -1) {
+        if (s_cwd_fd == -1 ||
+            append_path(s_cwd, path, cwd_path, sizeof(cwd_path), NULL) == -1) {
             pthread_mutex_unlock(&s_cwd_mutex);
             return -1;
         }
         pthread_mutex_unlock(&s_cwd_mutex);
         path_to_open = cwd_path;
-        absolute_path = 1;
+    } else if (!absolute_path) {
+        if (dirfd < 3 || dirfd >= MAX_FD) {
+            errno = EBADF;
+            return -1;
+        }
+        int root_index = dirfd - 3;
+        if (root_index >= MAX_FD - 3 ||
+            s_fds[root_index].handle == NULL) {
+            errno = EBADF;
+            return -1;
+        }
+        if (s_fds[root_index].path == NULL) {
+            errno = ENOTDIR;
+            return -1;
+        }
+        if (append_path(s_fds[root_index].path, path, cwd_path,
+                        sizeof(cwd_path), NULL) == -1)
+            return -1;
+        path_to_open = cwd_path;
     } else {
         size_t path_length = strlen(path);
         if (path_length >= sizeof(cwd_path)) {
@@ -376,22 +398,6 @@ int openat(int dirfd, const char* path, int flags, ...) {
         if (normalize_path(cwd_path, sizeof(cwd_path), NULL) == -1)
             return -1;
         path_to_open = cwd_path;
-    }
-
-    HANDLE root_directory = NULL;
-    if (!absolute_path) {
-        int root_fd;
-        if (dirfd < 3 || dirfd >= MAX_FD) {
-            errno = EBADF;
-            return -1;
-        }
-        root_fd = dirfd;
-        int root_index = root_fd - 3;
-        if (root_index >= MAX_FD - 3 || s_fds[root_index].handle == NULL) {
-            errno = EBADF;
-            return -1;
-        }
-        root_directory = s_fds[root_index].handle;
     }
 
     int fd = -1;
@@ -420,7 +426,7 @@ int openat(int dirfd, const char* path, int flags, ...) {
     };
 
     X_OBJECT_ATTRIBUTES ObjectAttributes = {
-        .RootDirectory = root_directory,
+        .RootDirectory = NULL,
         .ObjectName = &ObjectName,
         .Attributes = 0
     };
@@ -479,6 +485,17 @@ int openat(int dirfd, const char* path, int flags, ...) {
         CreateOptions |= FILE_NON_DIRECTORY_FILE;
     }
 
+    char *directory_path = NULL;
+    if (flags & O_DIRECTORY) {
+        size_t directory_path_length = strlen(path_to_open);
+        directory_path = malloc(directory_path_length + 1);
+        if (directory_path == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        memcpy(directory_path, path_to_open, directory_path_length + 1);
+    }
+
     NTSTATUS status = NtCreateFile(
         pHandle,
         DesiredAccess,
@@ -491,12 +508,14 @@ int openat(int dirfd, const char* path, int flags, ...) {
         CreateOptions
     );
     if (!NT_SUCCESS(status)) {
+        free(directory_path);
         errno = nt_status_to_errno(status);
         return -1;
     }
     
     s_fds[fd].off = 0;
     s_fds[fd].access = DesiredAccess;
+    s_fds[fd].path = directory_path;
     return fd + 3;
 }
 
@@ -509,6 +528,8 @@ int close (int fd) {
 
     NTSTATUS status = NtClose(s_fds[fd].handle);
     s_fds[fd].handle = NULL;
+    free(s_fds[fd].path);
+    s_fds[fd].path = NULL;
     if (!NT_SUCCESS(status)) {
         errno = nt_status_to_errno(status);
         return -1;

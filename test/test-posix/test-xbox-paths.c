@@ -68,6 +68,50 @@ main(void)
     CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0, "verify cwd-relative path");
     CHECK(close(fd) == 0, "close cwd-relative path");
 
+    int base_dirfd = open(POSIX_DIR, O_RDWR | O_DIRECTORY);
+    CHECK(base_dirfd >= 0, "open absolute base directory");
+    fd = openat(base_dirfd, "child/../child/" FILE_NAME, O_RDONLY);
+    CHECK(fd >= 0, "openat relative to absolute directory");
+    CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer),
+          "read path relative to absolute directory");
+    CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0,
+          "verify path relative to absolute directory");
+    CHECK(close(fd) == 0, "close path relative to absolute directory");
+
+    int child_dirfd = openat(base_dirfd, "child", O_RDWR | O_DIRECTORY);
+    CHECK(child_dirfd >= 0, "open nested directory with openat");
+    fd = openat(child_dirfd, FILE_NAME, O_RDONLY);
+    CHECK(fd >= 0, "openat relative to nested directory");
+    CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer),
+          "read path relative to nested directory");
+    CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0,
+          "verify path relative to nested directory");
+    CHECK(close(fd) == 0, "close path relative to nested directory");
+    CHECK(close(child_dirfd) == 0, "close nested directory");
+    CHECK(close(base_dirfd) == 0, "close absolute base directory");
+
+    int relative_dirfd = open("..", O_RDWR | O_DIRECTORY);
+    CHECK(relative_dirfd >= 0, "open cwd-relative base directory");
+    fd = openat(relative_dirfd, "child/../child/" FILE_NAME, O_RDONLY);
+    CHECK(fd >= 0, "openat relative to cwd-opened directory");
+    CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer),
+          "read path relative to cwd-opened directory");
+    CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0,
+          "verify path relative to cwd-opened directory");
+    CHECK(close(fd) == 0, "close path relative to cwd-opened directory");
+
+    int relative_childfd = openat(relative_dirfd, "child", O_RDWR | O_DIRECTORY);
+    CHECK(relative_childfd >= 0, "open relative nested directory");
+    fd = openat(relative_childfd, FILE_NAME, O_RDONLY);
+    CHECK(fd >= 0, "openat relative to relative nested directory");
+    CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer),
+          "read path relative to relative nested directory");
+    CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0,
+          "verify path relative to relative nested directory");
+    CHECK(close(fd) == 0, "close path relative to relative nested directory");
+    CHECK(close(relative_childfd) == 0, "close relative nested directory");
+    CHECK(close(relative_dirfd) == 0, "close cwd-relative base directory");
+
     fd = openat(-1, POSIX_DOT_PATH, O_RDONLY);
     CHECK(fd >= 0, "absolute path ignores dirfd");
     CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer), "read POSIX path");
