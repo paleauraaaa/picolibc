@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,23 +21,23 @@ static char s_cwd[PATH_MAX + 1] = "";
 static pthread_mutex_t s_cwd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int s_cwd_fd = -1;
 
-static int
+static bool
 is_absolute_path(const char *path)
 {
     const char *separator;
     const char *colon = strchr(path, ':');
 
     if (path[0] == '/' || path[0] == '\\')
-        return 1;
+        return true;
     if (colon == NULL || colon == path)
-        return 0;
+        return false;
 
     separator = strpbrk(path, "/\\");
     return (separator == NULL || colon < separator) &&
            (colon[1] == '/' || colon[1] == '\\');
 }
 
-static int
+static bool
 is_path_separator(char ch)
 {
     return ch == '/' || ch == '\\';
@@ -49,9 +50,9 @@ normalize_path(char *path, size_t capacity, size_t *normalized_length)
     size_t read_index = 0;
     size_t write_index = 0;
     size_t protected_length = 0;
-    int posix_absolute = path[0] == '/';
-    int rooted_path = path[0] == '\\';
-    int relative_path = !posix_absolute && !rooted_path;
+    bool posix_absolute = path[0] == '/';
+    bool rooted_path = path[0] == '\\';
+    bool relative_path = !posix_absolute && !rooted_path;
     char separator = relative_path ? '/' : (posix_absolute ? '/' : '\\');
 
     if (path_length == 0) {
@@ -193,7 +194,7 @@ append_path(const char *base_path, const char *path, char *resolved_path,
 char *
 getcwd(char *buf, size_t size)
 {
-    int allocated = buf == NULL;
+    bool allocated = buf == NULL;
 
     pthread_mutex_lock(&s_cwd_mutex);
     if (allocated) {
@@ -303,7 +304,7 @@ translate_path(const char *path, char *native_path, size_t capacity,
     size_t output_length = path_length;
     const char *tail = path;
     size_t volume_length = 0;
-    int posix_absolute = path[0] == '/';
+    bool posix_absolute = path[0] == '/';
 
     if (path_length == 0) {
         errno = ENOENT;
@@ -359,7 +360,7 @@ int openat(int dirfd, const char* path, int flags, ...) {
 
     char cwd_path[PATH_MAX + 1];
     const char *path_to_open = path;
-    int absolute_path = is_absolute_path(path);
+    bool absolute_path = is_absolute_path(path);
     if (!absolute_path && dirfd == AT_FDCWD) {
         pthread_mutex_lock(&s_cwd_mutex);
         if (s_cwd_fd == -1 ||
@@ -548,7 +549,11 @@ off_t lseek(int fd, off_t offset, int whence) {
     uint64_t file_size = 0;
     X_IO_STATUS_BLOCK IoStatusBlock;
     X_FILE_NETWORK_OPEN_INFORMATION Info;
-    NTSTATUS status = NtQueryInformationFile(s_fds[fd].handle, &IoStatusBlock, &Info, sizeof(Info), FileNetworkOpenInformation);
+    NTSTATUS status = NtQueryInformationFile(
+        s_fds[fd].handle, &IoStatusBlock,
+        &Info, sizeof(Info),
+        FileNetworkOpenInformation);
+
     if (!NT_SUCCESS(status)) {
         errno = nt_status_to_errno(status);
         return -1;
@@ -570,6 +575,7 @@ off_t lseek(int fd, off_t offset, int whence) {
             errno = EINVAL;
             return -1;
     }
+
     if (new_off < 0) {
         errno = EINVAL;
         return -1;

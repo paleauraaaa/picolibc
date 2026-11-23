@@ -83,7 +83,7 @@ extern void __libc_init_array(void);
 
 #ifdef _XBOX
 extern CRITICAL_SECTION mmap_lock;
-extern void __libc_xbox_lock_init(void);
+extern void __libc_xbox_thread_init(void);
 #endif
 
 /* After the architecture-specific chip initialization is done, this
@@ -138,7 +138,7 @@ __start(void)
 #ifdef _XBOX
 #ifndef __SINGLE_THREAD
     __xbox_libc_lock_init();
-    __xbox_thread_init();
+    __libc_xbox_thread_init();
 #endif
     RtlInitializeCriticalSection(&mmap_lock);
 #endif
