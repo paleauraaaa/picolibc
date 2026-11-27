@@ -47,6 +47,7 @@ tests = [
   'test-rename',
   'test-setrlimit',
   'test-signal',
+  'test-sigset',
   'test-stat',
   'test-statvfs',
   ]

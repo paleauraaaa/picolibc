@@ -37,6 +37,7 @@ srcs_signal = [
     'sig2str.c',
     'sigjmp_getsigs.c',
     'sigjmp_setsigs.c',
+    'sigset.c',
 ]
 
 srcs_signal_use = []
