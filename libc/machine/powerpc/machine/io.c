@@ -719,6 +719,25 @@ int dup2(int oldfd, int newfd) {
     return newfd;
 }
 
+int fsync(int fd) {
+    pthread_mutex_lock(&s_fds_mutex);
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL || f->console) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = f == NULL ? EBADF : EINVAL;
+        return -1;
+    }
+
+    X_IO_STATUS_BLOCK io_status = {0};
+    NTSTATUS status = NtFlushBuffersFile(f->handle, &io_status);
+    pthread_mutex_unlock(&s_fds_mutex);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return 0;
+}
+
 static int ftruncate_locked(int fd, off_t length) {
     file_descriptor_t *f = file_descriptor(fd);
     if (f == NULL || f->console || !(f->access & FILE_WRITE_DATA)) {

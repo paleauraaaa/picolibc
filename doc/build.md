@@ -425,3 +425,8 @@ queried causes `readdir` to fail. Directory descriptors use separate native
 handles so streams enumerate independently. `dirfd` returns the stream-owned
 descriptor for operations that do not alter its position; `closedir` closes it.
 `rewinddir` is not implemented for Xbox.
+
+Xbox `fsync` calls `NtFlushBuffersFile` for file and directory descriptors;
+the debug console returns `EINVAL`. Kernel and filesystem support, including
+read-only handles and durability guarantees, has not been verified on hardware.
+Xenia currently stubs this kernel call and does not flush file contents.
