@@ -1,5 +1,6 @@
 /* Standalone Xbox guest test; link with the Xbox CRT and kernel/XAM imports. */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -92,6 +93,11 @@ main(void)
           "fstatat null path");
     CHECK(fstatat(-1, POSIX_DIR, NULL, 0) == -1 && errno == EFAULT,
           "fstatat null buffer");
+    CHECK(fdopendir(-1) == NULL && errno == EBADF, "fdopendir invalid descriptor");
+    CHECK(fdopendir(STDOUT_FILENO) == NULL && errno == EBADF,
+          "fdopendir stdout");
+    CHECK(opendir("/game/picolibc-missing-dir-for-opendir") == NULL && errno == ENOENT,
+          "opendir missing directory");
     int dirfd = open(POSIX_DIR, O_CREAT | O_RDWR | O_DIRECTORY, 0);
     CHECK(dirfd >= 0, "create POSIX directory");
     memset(&file_stat, 0xcc, sizeof(file_stat));
@@ -110,7 +116,25 @@ main(void)
           "fstatat no-follow is unsupported");
     CHECK(memcmp(&file_stat, &other_stat, sizeof(file_stat)) == 0,
           "fstatat leaves buffer unchanged on error");
-    CHECK(close(dirfd) == 0, "close POSIX directory");
+    int shared_dirfd = open(POSIX_DIR, O_RDWR | O_DIRECTORY);
+    CHECK(shared_dirfd >= 0 && shared_dirfd != dirfd, "open shared directory");
+    DIR *stream = fdopendir(dirfd);
+    CHECK(stream != NULL, "fdopendir directory");
+    CHECK(fstat(dirfd, &other_stat) == 0 && S_ISDIR(other_stat.st_mode),
+          "fdopendir retains descriptor");
+    CHECK(closedir(stream) == 0, "closedir descriptor stream");
+    CHECK(fstat(dirfd, &other_stat) == -1 && errno == EBADF,
+          "closedir closes descriptor");
+    CHECK(fstat(shared_dirfd, &other_stat) == 0 && close(shared_dirfd) == 0,
+          "closedir preserves another shared descriptor");
+    dirfd = open(POSIX_DIR, O_WRONLY | O_DIRECTORY);
+    CHECK(dirfd >= 0, "open write-only directory");
+    CHECK(fdopendir(dirfd) == NULL && errno == EBADF,
+          "fdopendir rejects write-only descriptor");
+    CHECK(fstat(dirfd, &other_stat) == 0 && close(dirfd) == 0,
+          "failed fdopendir preserves descriptor");
+    stream = opendir(POSIX_DIR);
+    CHECK(stream != NULL && closedir(stream) == 0, "opendir and closedir");
     CHECK(stat(POSIX_DIR, &file_stat) == 0 && S_ISDIR(file_stat.st_mode),
           "stat directory");
     errno = 0;
@@ -150,6 +174,8 @@ main(void)
 
     int fd = open("./" FILE_NAME, O_CREAT | O_TRUNC | O_RDWR, 0);
     CHECK(fd >= 0, "open relative path");
+    CHECK(fdopendir(fd) == NULL && errno == ENOTDIR,
+          "fdopendir rejects regular file");
     errno = 0;
     CHECK(fstat(fd, NULL) == -1 && errno == EFAULT, "fstat null buffer");
     CHECK(fstat(fd, &file_stat) == 0 && file_stat.st_size == 0, "fstat empty file");

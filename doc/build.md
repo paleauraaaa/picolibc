@@ -396,3 +396,6 @@ Xbox `unlink` and `unlinkat` reject locally open files with `EBUSY`; file ID
 collisions can also cause conservative rejections across volumes.
 `unlinkat` with `AT_REMOVEDIR` returns `ENOSYS`; directory deletion is not
 implemented. No-follow behavior for file symlinks has not been verified.
+
+Xbox `fdopendir` and `opendir` create directory streams that `closedir`
+releases. Directory enumeration with `readdir` is not yet implemented.

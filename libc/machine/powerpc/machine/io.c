@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -1356,4 +1357,50 @@ done:
 
 int rename(const char *oldpath, const char *newpath) {
     return renameat(AT_FDCWD, oldpath, AT_FDCWD, newpath);
+}
+
+DIR* fdopendir(int fd) {
+    pthread_mutex_lock(&s_fds_mutex);
+    file_descriptor_t *file = file_descriptor(fd);
+    if (file == NULL || !(file->access & FILE_READ_DATA)) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EBADF;
+        return NULL;
+    }
+    if (!file->is_dir) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = ENOTDIR;
+        return NULL;
+    }
+    DIR *dir = calloc(1, sizeof(*dir));
+    if (dir == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = ENOMEM;
+        return NULL;
+    }
+    dir->fd = fd;
+    pthread_mutex_unlock(&s_fds_mutex);
+    return dir;
+}
+
+DIR* opendir(const char *name) {
+    int fd = open(name, O_RDONLY | O_DIRECTORY);
+    if (fd == -1)
+        return NULL;
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        int error = errno;
+        close(fd);
+        errno = error;
+    }
+    return dir;
+}
+
+int closedir(DIR *dir) {
+    int result = close(dir->fd);
+    int error = errno;
+    free(dir);
+    if (result == -1)
+        errno = error;
+    return result;
 }
