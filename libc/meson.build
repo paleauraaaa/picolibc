@@ -65,12 +65,15 @@ foreach libname : libnames
   src_cpart += get_variable('src_' + libname, [])
 endforeach
 
-# If there's no libraries with OS functions, then integrate the
-# fallback OS implementations of signal, sbrk and sysconf into the C
-# library
+# If there's no libraries with OS functions, integrate the fallback OS
+# implementations into libc, except for the Xbox build.
 
-if not has_os_library
+if not has_os_library and not meson.get_external_property('picolibc_xbox360', false)
   src_cpart += src_os_fallback
+endif
+
+if meson.get_external_property('picolibc_xbox360', false) and not has_os_fallback
+  src_cpart += files('../libos/fallback/signal.c', '../libos/fallback/raise.c')
 endif
 
 subdir('include')
@@ -96,7 +99,8 @@ foreach params : targets
 				            pic: use_pic,
 				            objects : libobjs,
 					    include_directories: inc,
-					    c_args: target_c_args + c_args)
+					    c_args: target_c_args + c_args,
+                                            kwargs: xbox_archive_kwargs)
 
     set_variable('lib_cpart' + target, local_lib_cpart_target)
   endif

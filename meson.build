@@ -56,6 +56,11 @@ fs = import('fs')
 cc = meson.get_compiler('c')
 compiler_id = cc.get_id()
 
+xbox_archive_kwargs = {}
+if meson.get_external_property('picolibc_xbox360', false)
+  xbox_archive_kwargs = {'name_suffix': 'lib'}
+endif
+
 # Find the compiler installation directory by parsing the output of
 # cc -print-search-dirs
 
@@ -2085,7 +2090,8 @@ foreach params : targets
 				          pic: false,
 				          objects : libobjs,
 				          include_directories: inc,
-				          c_args: target_c_args + c_args)
+				          c_args: target_c_args + c_args,
+                                          kwargs: xbox_archive_kwargs)
     endif
 
   else
@@ -2111,7 +2117,8 @@ foreach params : targets
 				          pic: false,
 				          objects : libobjs,
 				          include_directories: inc,
-				          c_args: target_c_args + c_args)
+				          c_args: target_c_args + c_args,
+                                          kwargs: xbox_archive_kwargs)
     endif
   endif
 

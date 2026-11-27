@@ -73,7 +73,8 @@ foreach params : targets
 			  install : really_install,
 			  install_dir : instdir,
 			  include_directories : inc,
-			  c_args : target_c_args + c_args + semihost_c_args)
+			  c_args : target_c_args + c_args + semihost_c_args,
+                          kwargs : xbox_archive_kwargs)
   else
     target_lib_prefix = params['lib_prefix']
     _lib = static_library(join_paths(target_dir, target_lib_prefix + libsemihost_name),
@@ -81,7 +82,8 @@ foreach params : targets
 			  install : really_install,
 			  install_dir : instdir,
 			  include_directories : inc,
-			  c_args : target_c_args + c_args + semihost_c_args)
+			  c_args : target_c_args + c_args + semihost_c_args,
+                          kwargs : xbox_archive_kwargs)
   endif
 
   set_variable('lib_semihost' + target, _lib)

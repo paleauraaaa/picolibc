@@ -67,7 +67,8 @@ if has_os_fallback
                             install : really_install,
                             install_dir : instdir,
                             include_directories : inc,
-                            c_args : target_c_args + c_args)
+                            c_args : target_c_args + c_args,
+                            kwargs : xbox_archive_kwargs)
     else
       target_lib_prefix = params['lib_prefix']
       _lib = static_library(join_paths(target_dir,
@@ -76,7 +77,8 @@ if has_os_fallback
                             install : really_install,
                             install_dir : instdir,
                             include_directories : inc,
-                            c_args : target_c_args + c_args)
+                            c_args : target_c_args + c_args,
+                            kwargs : xbox_archive_kwargs)
     endif
 
     set_variable(libfallback_var + target, _lib)

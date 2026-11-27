@@ -54,7 +54,8 @@ foreach params : targets
 		     install_dir : instdir,
 		     pic: false,
                      c_args: target_c_args + c_args,
-		     objects : [])
+		     objects : [],
+                     kwargs: xbox_archive_kwargs)
     else
       target_lib_prefix = params['lib_prefix']
       static_library(join_paths(target_dir, target_lib_prefix + lib_name),
@@ -63,7 +64,8 @@ foreach params : targets
 		     install_dir : instdir,
 		     pic: false,
                      c_args: target_c_args + c_args,
-		     objects : [])
+		     objects : [],
+                     kwargs: xbox_archive_kwargs)
     endif
   endforeach
 endforeach

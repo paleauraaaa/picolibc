@@ -206,6 +206,7 @@ if srcs_strcmp_use != []
 				srcs_strcmp_use,
 				pic: use_pic,
 				c_args: target_c_args + c_args + cargs_strcmp,
-				include_directories: inc))
+				include_directories: inc,
+                                kwargs: xbox_archive_kwargs))
   endforeach
 endif

@@ -48,7 +48,11 @@ sigset_t      _sig_pending;
 _sig_func_ptr
 __fallback_signal(int sig, _sig_func_ptr func)
 {
-    if (sig < 0 || sig >= _NSIG) {
+    if (sig < 0 || sig >= _NSIG
+#ifdef _XBOX
+        || sig == 0
+#endif
+    ) {
         errno = EINVAL;
         return SIG_ERR;
     }

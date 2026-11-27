@@ -1,11 +1,13 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <windef.h>
@@ -286,11 +288,47 @@ int chdir(const char* path) {
 typedef struct file_descriptor {
     HANDLE          handle;
     ACCESS_MASK     access;
-    off_t           off;
     char           *path;
-} file_descriptor;
+    bool            is_dir;
+    int             rcount;
+} file_descriptor_t;
 
-static file_descriptor s_fds[MAX_FD - 3] = { { NULL, 0, 0, NULL } };
+typedef struct {
+    file_descriptor_t *file;
+    off_t off;
+} fd_slot_t;
+
+static file_descriptor_t s_files[MAX_FD - 3];
+static fd_slot_t s_fds[MAX_FD - 3];
+static pthread_mutex_t s_fds_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static fd_slot_t *
+file_slot(int fd)
+{
+    if (fd < 3 || fd >= MAX_FD || s_fds[fd - 3].file == NULL)
+        return NULL;
+    return &s_fds[fd - 3];
+}
+
+file_descriptor_t* file_descriptor(int fd) {
+    fd_slot_t *slot = file_slot(fd);
+    return slot != NULL ? slot->file : NULL;
+}
+
+static int
+set_file_length(file_descriptor_t *f, off_t length)
+{
+    X_FILE_END_OF_FILE_INFORMATION info = { .EndOfFile.QuadPart = length };
+    X_IO_STATUS_BLOCK io_status;
+    NTSTATUS status = NtSetInformationFile(f->handle, &io_status,
+                                           &info, sizeof(info),
+                                           FileEndOfFileInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return 0;
+}
 
 int open(const char* path, int flags, ...) {
     return openat(AT_FDCWD, path, flags);
@@ -371,23 +409,24 @@ int openat(int dirfd, const char* path, int flags, ...) {
         pthread_mutex_unlock(&s_cwd_mutex);
         path_to_open = cwd_path;
     } else if (!absolute_path) {
-        if (dirfd < 3 || dirfd >= MAX_FD) {
+        pthread_mutex_lock(&s_fds_mutex);
+        file_descriptor_t *root = file_descriptor(dirfd);
+        if (root == NULL) {
+            pthread_mutex_unlock(&s_fds_mutex);
             errno = EBADF;
             return -1;
         }
-        int root_index = dirfd - 3;
-        if (root_index >= MAX_FD - 3 ||
-            s_fds[root_index].handle == NULL) {
-            errno = EBADF;
-            return -1;
-        }
-        if (s_fds[root_index].path == NULL) {
+        if (!root->is_dir) {
+            pthread_mutex_unlock(&s_fds_mutex);
             errno = ENOTDIR;
             return -1;
         }
-        if (append_path(s_fds[root_index].path, path, cwd_path,
-                        sizeof(cwd_path), NULL) == -1)
+        if (append_path(root->path, path, cwd_path,
+                        sizeof(cwd_path), NULL) == -1) {
+            pthread_mutex_unlock(&s_fds_mutex);
             return -1;
+        }
+        pthread_mutex_unlock(&s_fds_mutex);
         path_to_open = cwd_path;
     } else {
         size_t path_length = strlen(path);
@@ -401,24 +440,10 @@ int openat(int dirfd, const char* path, int flags, ...) {
         path_to_open = cwd_path;
     }
 
-    int fd = -1;
-    for (int i = 0; i < MAX_FD - 3; i++) {
-        if (s_fds[i].handle == NULL) {
-            fd = i;
-            break;
-        }
-    }
-    if (fd == -1) {
-        errno = EMFILE;
-        return -1;
-    }
-
     char native_path[PATH_MAX + 1];
     size_t len;
     if (translate_path(path_to_open, native_path, sizeof(native_path), &len) == -1)
         return -1;
-
-    PHANDLE pHandle = &s_fds[fd].handle;
 
     ANSI_STRING ObjectName = {
         .Length = (USHORT)len,
@@ -437,7 +462,7 @@ int openat(int dirfd, const char* path, int flags, ...) {
 
     ACCESS_MASK DesiredAccess = 0;
     ULONG FileAttributes = FILE_ATTRIBUTE_NORMAL;
-    ULONG ShareAccess = FILE_SHARE_READ;
+    ULONG ShareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
     ULONG CreateDisposition = 0;
     ULONG CreateOptions = FILE_SYNCHRONOUS_IO_NONALERT;
 
@@ -486,19 +511,56 @@ int openat(int dirfd, const char* path, int flags, ...) {
         CreateOptions |= FILE_NON_DIRECTORY_FILE;
     }
 
-    char *directory_path = NULL;
-    if (flags & O_DIRECTORY) {
-        size_t directory_path_length = strlen(path_to_open);
-        directory_path = malloc(directory_path_length + 1);
-        if (directory_path == NULL) {
-            errno = ENOMEM;
+    pthread_mutex_lock(&s_fds_mutex);
+    int fd = -1;
+    file_descriptor_t *free_file = NULL;
+    file_descriptor_t *f = NULL;
+    for (int i = 0; i < MAX_FD - 3; i++) {
+        if (fd == -1 && s_fds[i].file == NULL)
+            fd = i;
+        if (s_files[i].handle == NULL) {
+            if (free_file == NULL)
+                free_file = &s_files[i];
+        } else if (!((flags & O_CREAT) && (flags & O_EXCL)) &&
+                   s_files[i].access == DesiredAccess &&
+                   s_files[i].is_dir == ((flags & O_DIRECTORY) != 0) &&
+                   strcmp(s_files[i].path, native_path) == 0) {
+            f = &s_files[i];
+        }
+    }
+    if (fd == -1) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EMFILE;
+        return -1;
+    }
+    if (f != NULL) {
+        if ((flags & O_TRUNC) && set_file_length(f, 0) < 0) {
+            pthread_mutex_unlock(&s_fds_mutex);
             return -1;
         }
-        memcpy(directory_path, path_to_open, directory_path_length + 1);
+        ++f->rcount;
+        s_fds[fd].file = f;
+        s_fds[fd].off = 0;
+        pthread_mutex_unlock(&s_fds_mutex);
+        return fd + 3;
+    }
+    if (free_file == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EMFILE;
+        return -1;
     }
 
+    char *saved_path = malloc(len + 1);
+    if (saved_path == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(saved_path, native_path, len + 1);
+    f = free_file;
+
     NTSTATUS status = NtCreateFile(
-        pHandle,
+        &f->handle,
         DesiredAccess,
         &ObjectAttributes,
         &IoStatusBlock,
@@ -509,28 +571,43 @@ int openat(int dirfd, const char* path, int flags, ...) {
         CreateOptions
     );
     if (!NT_SUCCESS(status)) {
-        free(directory_path);
+        f->handle = NULL;
+        free(saved_path);
+        pthread_mutex_unlock(&s_fds_mutex);
         errno = nt_status_to_errno(status);
         return -1;
     }
     
+    f->access = DesiredAccess;
+    f->path = saved_path;
+    f->is_dir = (flags & O_DIRECTORY) != 0;
+    f->rcount = 1;
+    s_fds[fd].file = f;
     s_fds[fd].off = 0;
-    s_fds[fd].access = DesiredAccess;
-    s_fds[fd].path = directory_path;
+    pthread_mutex_unlock(&s_fds_mutex);
     return fd + 3;
 }
 
 int close (int fd) {
-    fd -= 3;
-    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
+    pthread_mutex_lock(&s_fds_mutex);
+    fd_slot_t *slot = file_slot(fd);
+    if (slot == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
         errno = EBADF;
         return -1;
     }
 
-    NTSTATUS status = NtClose(s_fds[fd].handle);
-    s_fds[fd].handle = NULL;
-    free(s_fds[fd].path);
-    s_fds[fd].path = NULL;
+    file_descriptor_t *f = slot->file;
+    slot->file = NULL;
+    if (--f->rcount != 0) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        return 0;
+    }
+    NTSTATUS status = NtClose(f->handle);
+    f->handle = NULL;
+    free(f->path);
+    f->path = NULL;
+    pthread_mutex_unlock(&s_fds_mutex);
     if (!NT_SUCCESS(status)) {
         errno = nt_status_to_errno(status);
         return -1;
@@ -539,18 +616,40 @@ int close (int fd) {
     return 0;
 }
 
-off_t lseek(int fd, off_t offset, int whence) {
-    fd -= 3;
-    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
+static int ftruncate_locked(int fd, off_t length) {
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL || !(f->access & FILE_WRITE_DATA)) {
         errno = EBADF;
         return -1;
     }
+    if (length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return set_file_length(f, length);
+}
+
+int ftruncate(int fd, off_t length) {
+    pthread_mutex_lock(&s_fds_mutex);
+    int result = ftruncate_locked(fd, length);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
+}
+
+static off_t lseek_locked(int fd, off_t offset, int whence) {
+    fd_slot_t *slot = file_slot(fd);
+    if (slot == NULL) {
+        errno = EBADF;
+        return -1;
+    }
+    file_descriptor_t *f = slot->file;
 
     uint64_t file_size = 0;
     X_IO_STATUS_BLOCK IoStatusBlock;
     X_FILE_NETWORK_OPEN_INFORMATION Info;
     NTSTATUS status = NtQueryInformationFile(
-        s_fds[fd].handle, &IoStatusBlock,
+        f->handle, &IoStatusBlock,
         &Info, sizeof(Info),
         FileNetworkOpenInformation);
 
@@ -566,7 +665,7 @@ off_t lseek(int fd, off_t offset, int whence) {
             new_off = offset;
             break;
         case SEEK_CUR:
-            new_off = s_fds[fd].off + offset;
+            new_off = slot->off + offset;
             break;
         case SEEK_END:
             new_off = file_size + offset;
@@ -581,26 +680,34 @@ off_t lseek(int fd, off_t offset, int whence) {
         return -1;
     }
 
-    s_fds[fd].off = new_off;
+    slot->off = new_off;
     return new_off;
 }
 
-ssize_t read(int fd, void *buf, size_t count) {
-    fd -= 3;
-    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
+off_t lseek(int fd, off_t offset, int whence) {
+    pthread_mutex_lock(&s_fds_mutex);
+    off_t result = lseek_locked(fd, offset, whence);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
+}
+
+static ssize_t read_locked(int fd, void *buf, size_t count) {
+    fd_slot_t *slot = file_slot(fd);
+    if (slot == NULL) {
+        errno = EBADF;
+        return -1;
+    }
+    file_descriptor_t *f = slot->file;
+
+    if (!(f->access & FILE_READ_DATA)) {
         errno = EBADF;
         return -1;
     }
 
-    if (!(s_fds[fd].access & FILE_READ_DATA)) {
-        errno = EBADF;
-        return -1;
-    }
-
-    LARGE_INTEGER off = { .QuadPart = s_fds[fd].off };
+    LARGE_INTEGER off = { .QuadPart = slot->off };
     X_IO_STATUS_BLOCK IoStatusBlock;
     NTSTATUS status = NtReadFile(
-        s_fds[fd].handle,
+        f->handle,
         NULL,
         NULL,
         NULL,
@@ -618,44 +725,110 @@ ssize_t read(int fd, void *buf, size_t count) {
     }
 
     uint64_t bytes_read = IoStatusBlock.Information;
-    s_fds[fd].off += bytes_read;
+    slot->off += bytes_read;
     return bytes_read;
 }
 
-ssize_t write(int fd, const void *buf, size_t count) {
-    // TODO: This could definitely be made more efficient.
-    // But it works for now.
-    if (fd == STDOUT_FILENO) {
-        return fwrite(buf, 1, count, stdout);
-    } 
-    
-    if (fd == STDERR_FILENO) {
-        return fwrite(buf, 1, count, stderr);
-    }
+ssize_t read(int fd, void *buf, size_t count) {
+    pthread_mutex_lock(&s_fds_mutex);
+    ssize_t result = read_locked(fd, buf, count);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
+}
 
-    fd -= 3;
-    if (fd < 0 || fd >= MAX_FD - 3 || s_fds[fd].handle == NULL) {
+static ssize_t pread_locked(int fd, void *buf, size_t count, off_t offset) {
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL || !(f->access & FILE_READ_DATA)) {
+        errno = EBADF;
+        return -1;
+    }
+    if (offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (count > SSIZE_MAX)
+        count = SSIZE_MAX;
+
+    LARGE_INTEGER off = { .QuadPart = offset };
+    X_IO_STATUS_BLOCK io_status;
+    NTSTATUS status = NtReadFile(f->handle, NULL, NULL, NULL,
+                                 &io_status, buf, count, &off);
+    if (!NT_SUCCESS(status)) {
+        if ((uint32_t)status == STATUS_END_OF_FILE)
+            return 0;
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return io_status.Information;
+}
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
+    pthread_mutex_lock(&s_fds_mutex);
+    ssize_t result = pread_locked(fd, buf, count, offset);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
+}
+
+static ssize_t pwrite_locked(int fd, const void *buf, size_t count, off_t offset) {
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+        errno = ESPIPE;
+        return -1;
+    }
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL || !(f->access & FILE_WRITE_DATA)) {
+        errno = EBADF;
+        return -1;
+    }
+    if (offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (count > SSIZE_MAX)
+        count = SSIZE_MAX;
+
+    LARGE_INTEGER off = { .QuadPart = offset };
+    X_IO_STATUS_BLOCK io_status;
+    NTSTATUS status = NtWriteFile(f->handle, NULL, NULL, NULL,
+                                  &io_status, (PVOID)buf, count, &off);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return io_status.Information;
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
+    pthread_mutex_lock(&s_fds_mutex);
+    ssize_t result = pwrite_locked(fd, buf, count, offset);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
+}
+
+static ssize_t write_locked(int fd, const void *buf, size_t count) {
+    fd_slot_t *slot = file_slot(fd);
+    if (slot == NULL) {
+        errno = EBADF;
+        return -1;
+    }
+    file_descriptor_t *f = slot->file;
+
+    if (!(f->access & FILE_WRITE_DATA)) {
         errno = EBADF;
         return -1;
     }
 
-    if (!(s_fds[fd].access & FILE_WRITE_DATA)) {
-        errno = EBADF;
-        return -1;
-    }
-
-    if (s_fds[fd].access & FILE_APPEND_DATA) {
-        off_t off = lseek(fd + 3, 0, SEEK_END);
+    if (f->access & FILE_APPEND_DATA) {
+        off_t off = lseek_locked(fd, 0, SEEK_END);
         if (off < 0)
             return -1;
 
-        s_fds[fd].off = off;
+        slot->off = off;
     }
 
     X_IO_STATUS_BLOCK IoStatusBlock;
-    LARGE_INTEGER off = { .QuadPart = s_fds[fd].off };
+    LARGE_INTEGER off = { .QuadPart = slot->off };
     NTSTATUS status = NtWriteFile(
-        s_fds[fd].handle,
+        f->handle,
         NULL,
         NULL,
         NULL,
@@ -670,8 +843,19 @@ ssize_t write(int fd, const void *buf, size_t count) {
     }
 
     uint64_t bytes_written = IoStatusBlock.Information;
-    s_fds[fd].off += bytes_written;
+    slot->off += bytes_written;
     return bytes_written;
+}
+
+ssize_t write(int fd, const void *buf, size_t count) {
+    if (fd == STDOUT_FILENO)
+        return fwrite(buf, 1, count, stdout);
+    if (fd == STDERR_FILENO)
+        return fwrite(buf, 1, count, stderr);
+    pthread_mutex_lock(&s_fds_mutex);
+    ssize_t result = write_locked(fd, buf, count);
+    pthread_mutex_unlock(&s_fds_mutex);
+    return result;
 }
 
 int __stdio_flush(FILE *stream);
@@ -722,4 +906,133 @@ int __stdio_putc(char c, FILE *stream) {
     }
 
     return 0;
+}
+
+static int
+filetime_to_timespec(LONGLONG ticks, struct timespec *result)
+{
+    if (ticks < 0) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    if (ticks == 0) {
+        result->tv_sec = 0;
+        result->tv_nsec = 0;
+    } else {
+        result->tv_sec = ticks / 10000000LL - 11644473600LL;
+        result->tv_nsec = (long)((ticks % 10000000LL) * 100);
+    }
+    return 0;
+}
+
+int fstat(int fd, struct stat *buf) {
+    pthread_mutex_lock(&s_fds_mutex);
+
+    enum { FileFsVolumeInformation = 1 };
+    struct stat result = {0};
+    X_IO_STATUS_BLOCK io_status;
+    X_FILE_NETWORK_OPEN_INFORMATION info;
+    X_FILE_INTERNAL_INFORMATION internal_info;
+    struct {
+        LARGE_INTEGER creation_time;
+        ULONG serial_number;
+        ULONG label_length;
+        UCHAR supports_objects;
+        char label[PATH_MAX + 1];
+    } volume_info;
+    NTSTATUS status;
+
+    int ret = -1;
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+        if (buf == NULL) {
+            errno = EFAULT;
+            return -1;
+        }
+        result.st_mode = S_IFCHR | S_IWUSR | S_IWGRP | S_IWOTH;
+        *buf = result;
+        return 0;
+    }
+
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL || f->handle == NULL) {
+        errno = EBADF;
+        return -1;
+    }
+    if (buf == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    status = NtQueryInformationFile(f->handle, &io_status, &info, sizeof(info),
+                                    FileNetworkOpenInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        goto done;
+    }
+    status = NtQueryInformationFile(f->handle, &io_status, &internal_info,
+                                    sizeof(internal_info), FileInternalInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        goto done;
+    }
+    status = NtQueryVolumeInformationFile(f->handle, &io_status, &volume_info,
+                                          sizeof(volume_info), FileFsVolumeInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        goto done;
+    }
+
+    if (info.EndOfFile.QuadPart < 0 || info.AllocationSize.QuadPart < 0) {
+        errno = EOVERFLOW;
+        goto done;
+    }
+    if (filetime_to_timespec(info.LastAccessTime.QuadPart, &result.st_atim) < 0 ||
+        filetime_to_timespec(info.LastWriteTime.QuadPart, &result.st_mtim) < 0 ||
+        filetime_to_timespec(info.ChangeTime.QuadPart, &result.st_ctim) < 0)
+    {
+        errno = EOVERFLOW;
+        goto done;
+    }
+
+    result.st_dev = volume_info.serial_number;
+    result.st_ino = internal_info.IndexNumber;
+    result.st_mode = (info.Attributes & FILE_ATTRIBUTE_DIRECTORY) ? S_IFDIR : S_IFREG;
+    result.st_mode |= S_IRUSR | S_IRGRP | S_IROTH;
+    if (!(info.Attributes & FILE_ATTRIBUTE_READONLY))
+        result.st_mode |= S_IWUSR | S_IWGRP | S_IWOTH;
+    if (info.Attributes & FILE_ATTRIBUTE_DIRECTORY)
+        result.st_mode |= S_IXUSR | S_IXGRP | S_IXOTH;
+    result.st_size = info.EndOfFile.QuadPart;
+    result.st_blksize = 512;
+    result.st_blocks = info.AllocationSize.QuadPart / 512 +
+                       (info.AllocationSize.QuadPart % 512 != 0);
+    *buf = result;
+    ret = 0;
+
+done:
+    pthread_mutex_unlock(&s_fds_mutex);
+    return ret;
+}
+
+int stat(const char *path, struct stat *buf) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0 && errno == EISDIR)
+        fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (fd < 0)
+        return -1;
+    int ret = fstat(fd, buf);
+    if (ret < 0) {
+        int error = errno;
+        close(fd);
+        errno = error;
+        return -1;
+    }
+    return close(fd);
+}
+
+int lstat(const char *path, struct stat *buf) {
+    (void) path;
+    (void) buf;
+    errno = ENOSYS;
+    return -1;
 }

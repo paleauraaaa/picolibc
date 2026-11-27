@@ -30,7 +30,7 @@ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
     .globl name;         \
     .def name; .scl 2; .type 32; .endef; \
 	/* .scl 2   = external symbol    */  \
- 	/* .type 32 = COFF function type */  \ 
+ 	/* .type 32 = COFF function type */  \
 name:
 
 #define FUNC_END(name)

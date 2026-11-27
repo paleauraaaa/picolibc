@@ -1,4 +1,5 @@
 #ifdef _XBOX
+#include <unistd.h>
 #include <stdio.h>
 
 #include <xam.h>

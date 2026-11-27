@@ -38,7 +38,11 @@
 int
 __fallback_raise(int sig)
 {
-    if (sig < 0 || sig >= _NSIG) {
+    if (sig < 0 || sig >= _NSIG
+#ifdef _XBOX
+        || sig == 0
+#endif
+    ) {
         errno = EINVAL;
         return -1;
     }

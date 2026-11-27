@@ -10,8 +10,6 @@
 #define LARGE_PAGE_FLAG 0x20000000u
 #define FLAGS (MAP_PRIVATE | MAP_ANONYMOUS)
 
-unsigned int _tls_index;
-
 static int
 check(int condition, const char *message)
 {

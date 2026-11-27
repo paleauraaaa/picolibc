@@ -4,8 +4,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-unsigned int _tls_index;
-
 static pthread_mutex_t mutex;
 static pthread_mutex_t stalled_mutex;
 static atomic_int ready;

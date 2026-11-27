@@ -37,7 +37,7 @@ typedef struct pthread_mutex_t {
     .__robustness   = PTHREAD_MUTEX_STALLED,   \
     .__lock         = 0,                       \
     .__owner        = 0,                       \
-    .__next_owned   = NULL                     \ 
+    .__next_owned   = NULL                     \
 }
 
 int pthread_attr_init(pthread_attr_t *attr);

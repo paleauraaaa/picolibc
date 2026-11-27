@@ -82,7 +82,8 @@ foreach params : targets
 					    pic: use_pic,
 					    objects : libobjs,
 					    include_directories: inc,
-					    c_args: target_c_args + c_args)
+					    c_args: target_c_args + c_args,
+                                            kwargs: xbox_archive_kwargs)
     set_variable('lib_mpart' + target, local_lib_mpart_target)
   endif
 endforeach

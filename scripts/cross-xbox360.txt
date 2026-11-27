@@ -2,7 +2,6 @@
 xbox360_target = ['--target=powerpc64-unknown-xbox360']
 
 [binaries]
-# Put the Xbox-enabled LLVM bin directory first on PATH.
 c = ['clang'] + xbox360_target
 cpp = ['clang++'] + xbox360_target
 ar = 'llvm-ar'
@@ -20,8 +19,13 @@ picolibc_xbox360 = true
 
 [built-in options]
 b_vscrt = 'none'
+<<<<<<< HEAD
 c_args = ['-isystem', xbox360_headers ]
 cpp_args = ['-isystem', xbox360_headers ]
+=======
+c_args = ['-isystem', xbox360_headers, '-gcodeview']
+cpp_args = ['-isystem', xbox360_headers, '-gcodeview']
+>>>>>>> 62ad54d39 (More Xbox 360 impl.)
 c_link_args = ['-nostdlib', '-Wl,/entry:main']
 cpp_link_args = ['-nostdlib', '-Wl,/entry:main']
 
@@ -31,6 +35,8 @@ tests = false
 native-tests = false
 semihost = false
 shared-library = false
+enable-malloc = false
+os-fallback = 'false'
 specsdir = 'none'
 picocrt = true
 initfini-array = false

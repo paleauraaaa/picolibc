@@ -66,6 +66,8 @@ post_memory_setup(void)
 #include "../../crt0.h"
 
 #ifdef _XBOX
+unsigned int _tls_index;
+
 __attribute__((section(".CRT$XCA"), used))
 init_fn __pico_xc_a[1] = { NULL };
 
@@ -85,6 +87,9 @@ void _cstart(void *opal_base, void *opal_entry)
 #ifndef _XBOX
     __opal_base = opal_base;
     __opal_entry = opal_entry;
+#else
+    (void) opal_base;
+    (void) opal_entry;
 #endif /* _XBOX */
     __start();
 }

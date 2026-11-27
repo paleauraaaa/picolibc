@@ -178,6 +178,8 @@ if meson.get_external_property('picolibc_xbox360', false)
   foreach params : targets
     static_library('crt0',
                    src_picocrt,
+                   name_prefix : '',
+                   name_suffix : 'lib',
                    include_directories : inc,
                    c_args : params['c_args'] + arg_fnobuiltin + ['-D_LIBC', '-ffreestanding', '-DNO_FLASH', '-DCRT0_EXIT'],
                    install : really_install,

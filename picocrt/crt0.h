@@ -136,11 +136,11 @@ __start(void)
 #endif
 
 #ifdef _XBOX
+    RtlInitializeCriticalSection(&mmap_lock);
 #ifndef __SINGLE_THREAD
     __xbox_libc_lock_init();
     __libc_xbox_thread_init();
 #endif
-    RtlInitializeCriticalSection(&mmap_lock);
 #endif
 
 #if defined(__INIT_FINI_ARRAY) && CONSTRUCTORS

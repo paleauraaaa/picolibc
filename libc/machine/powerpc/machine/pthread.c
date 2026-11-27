@@ -12,6 +12,8 @@
 
 #include "error.h"
 
+void __libc_xbox_thread_init(void);
+
 int pthread_attr_init(pthread_attr_t *attr) {
     if (!attr)
         return -1;
