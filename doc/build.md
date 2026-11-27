@@ -411,5 +411,6 @@ Xbox `fdopendir` and `opendir` create directory streams that `closedir`
 releases. `readdir` opens each entry to obtain its file ID, since the native
 directory records do not contain one; an entry that cannot be opened or
 queried causes `readdir` to fail. Directory descriptors use separate native
-handles so streams enumerate independently. `rewinddir` and `dirfd` are not
-yet implemented for Xbox.
+handles so streams enumerate independently. `dirfd` returns the stream-owned
+descriptor for operations that do not alter its position; `closedir` closes it.
+`rewinddir` is not implemented for Xbox.

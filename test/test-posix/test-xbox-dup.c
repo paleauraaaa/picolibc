@@ -121,9 +121,24 @@ int main(void)
     CHECK(directory_copy >= 0 && close(directory) == 0, "duplicate directory survives close");
     DIR *stream = fdopendir(directory_copy);
     CHECK(stream != NULL, "fdopendir accepts duplicated directory");
+    errno = EDOM;
+    CHECK(dirfd(stream) == directory_copy && errno == EDOM,
+          "dirfd returns the stream descriptor without changing errno");
+    CHECK(fstatat(dirfd(stream), ".", &st, 0) == 0 && S_ISDIR(st.st_mode),
+          "dirfd descriptor supports directory-relative operations");
     errno = 0;
     CHECK(readdir(stream) != NULL || errno == 0, "read duplicated directory");
+    CHECK(dirfd(stream) == directory_copy, "dirfd remains stable after readdir");
     CHECK(closedir(stream) == 0, "close duplicated directory stream");
+    CHECK(fstat(directory_copy, &st) == -1 && errno == EBADF,
+          "closedir closes dirfd descriptor");
+    stream = opendir("game:\\");
+    CHECK(stream != NULL, "opendir game root");
+    int stream_fd = dirfd(stream);
+    CHECK(stream_fd >= 0 && fstat(stream_fd, &st) == 0 && S_ISDIR(st.st_mode),
+          "dirfd returns opendir descriptor");
+    CHECK(closedir(stream) == 0 && fstat(stream_fd, &st) == -1 && errno == EBADF,
+          "closedir closes opendir descriptor");
     puts("PICO_DUP_PASS");
     return 0;
 }

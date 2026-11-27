@@ -1563,6 +1563,10 @@ DIR* opendir(const char *name) {
     return dir;
 }
 
+int dirfd(DIR *dir) {
+    return dir->fd;
+}
+
 int closedir(DIR *dir) {
     int result = close(dir->fd);
     int error = errno;
