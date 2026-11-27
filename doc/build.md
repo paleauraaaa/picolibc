@@ -392,6 +392,11 @@ The Xbox `fstatat` implementation supports directory-relative paths and
 `AT_EMPTY_PATH`. For nonempty paths, `AT_SYMLINK_NOFOLLOW` returns `ENOSYS`:
 the port does not yet support no-follow metadata queries.
 
+Xbox `mkdir` and `mkdirat` create directories but ignore the requested mode;
+the port synthesizes permissions rather than enforcing POSIX mode bits.
+As with other Xbox path operations, `..` is normalized lexically, so a
+component removed by `..` is not checked for existence.
+
 Xbox `unlink` and `unlinkat` reject locally open files with `EBUSY`; file ID
 collisions can also cause conservative rejections across volumes.
 `unlinkat` with `AT_REMOVEDIR` returns `ENOSYS`; directory deletion is not

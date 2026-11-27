@@ -1091,6 +1091,53 @@ int lstat(const char *path, struct stat *buf) {
     return -1;
 }
 
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    (void)mode;
+    if (path == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (path[0] == '\0') {
+        errno = ENOENT;
+        return -1;
+    }
+
+    char native_path[PATH_MAX + 1];
+    size_t len;
+    if (resolve_at_path(dirfd, path, native_path, sizeof(native_path), &len) == -1)
+        return -1;
+
+    ANSI_STRING name = {
+        .Length = (USHORT)len,
+        .MaximumLength = (USHORT)(len + 1),
+        .Buffer = native_path,
+    };
+    X_OBJECT_ATTRIBUTES attrs = {
+        .RootDirectory = NULL,
+        .ObjectName = &name,
+        .Attributes = 0,
+    };
+    X_IO_STATUS_BLOCK io_status = {0};
+    LARGE_INTEGER allocation_size = { .QuadPart = 0 };
+    HANDLE handle;
+    NTSTATUS status = NtCreateFile(
+        &handle, FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE, &attrs,
+        &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    if (NT_SUCCESS(status))
+        status = NtClose(handle);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return 0;
+}
+
+int mkdir(const char *path, mode_t mode) {
+    return mkdirat(AT_FDCWD, path, mode);
+}
+
 int unlinkat(int dirfd, const char *path, int flags) {
     if (flags & ~AT_REMOVEDIR) {
         errno = EINVAL;

@@ -25,6 +25,8 @@ __asm__(".globl __heap_end\n"
 #define FILE_NAME "picolibc-path-xenia-test.bin"
 #define POSIX_DOT_PATH POSIX_DIR "/child/../child/" FILE_NAME
 #define NATIVE_DOT_PATH "game:\\picolibc-path-xenia-dir\\child\\..\\child\\" FILE_NAME
+/* The harness removes this fixture because Xbox rmdir is not implemented. */
+#define MKDIR_FIXTURE POSIX_CHILD "/picolibc-mkdir-fixture"
 
 #define CHECK(condition, label)                                      \
     do {                                                              \
@@ -93,6 +95,11 @@ main(void)
           "fstatat null path");
     CHECK(fstatat(-1, POSIX_DIR, NULL, 0) == -1 && errno == EFAULT,
           "fstatat null buffer");
+    CHECK(mkdir(NULL, 0777) == -1 && errno == EFAULT, "mkdir null path");
+    CHECK(mkdirat(-1, "", 0777) == -1 && errno == ENOENT,
+          "mkdirat empty path");
+    CHECK(mkdir("relative-mkdir", 0777) == -1 && errno == ENOENT,
+          "mkdir requires initialized current directory");
     CHECK(fdopendir(-1) == NULL && errno == EBADF, "fdopendir invalid descriptor");
     CHECK(fdopendir(STDOUT_FILENO) == NULL && errno == EBADF,
           "fdopendir stdout");
@@ -180,6 +187,59 @@ main(void)
     CHECK(fstat(fd, NULL) == -1 && errno == EFAULT, "fstat null buffer");
     CHECK(fstat(fd, &file_stat) == 0 && file_stat.st_size == 0, "fstat empty file");
     CHECK(write(fd, "paths", sizeof(buffer)) == sizeof(buffer), "write");
+    CHECK(mkdir(MKDIR_FIXTURE, 0000) == 0, "mkdir absolute directory");
+    CHECK(stat(MKDIR_FIXTURE, &other_stat) == 0 && S_ISDIR(other_stat.st_mode) &&
+          (other_stat.st_mode & S_IRWXU) == S_IRWXU, "mkdir mode is synthesized");
+    CHECK(mkdir(MKDIR_FIXTURE, 0777) == -1 && errno == EEXIST,
+          "mkdir existing directory");
+    CHECK(mkdir(FILE_NAME, 0777) == -1 && errno == EEXIST,
+          "mkdir existing file");
+    CHECK(mkdirat(-1, "relative-mkdir", 0777) == -1 && errno == EBADF,
+          "mkdirat invalid descriptor");
+    CHECK(mkdirat(fd, "relative-mkdir", 0777) == -1 && errno == ENOTDIR,
+          "mkdirat file descriptor");
+    CHECK(mkdirat(-1, MKDIR_FIXTURE "/absolute", 0700) == 0,
+          "mkdirat absolute path ignores descriptor");
+    int mkdir_dirfd = open(MKDIR_FIXTURE, O_RDONLY | O_DIRECTORY);
+    CHECK(mkdir_dirfd >= 0, "open mkdirat base");
+    CHECK(mkdirat(mkdir_dirfd, "nested/", 0755) == 0,
+          "mkdirat relative path with trailing slash");
+    CHECK(mkdirat(mkdir_dirfd, "nested/../other", 0755) == 0,
+          "mkdirat normalizes relative path");
+    CHECK(mkdirat(mkdir_dirfd, "missing/child", 0755) == -1 && errno == ENOENT,
+          "mkdirat missing parent");
+    CHECK(mkdirat(mkdir_dirfd, "nested", 0755) == -1 && errno == EEXIST,
+          "mkdirat existing directory");
+    CHECK(mkdirat(mkdir_dirfd, ".", 0755) == -1 && errno == EEXIST,
+          "mkdirat existing dot path");
+    CHECK(close(mkdir_dirfd) == 0, "close mkdirat base");
+    CHECK(mkdir("picolibc-mkdir-fixture/cwd", 0777) == 0,
+          "mkdir relative to current directory");
+    CHECK(mkdir("game:\\picolibc-path-xenia-dir\\child\\picolibc-mkdir-fixture\\native",
+                0777) == 0, "mkdir native absolute path");
+    int exhausted_fds[1024];
+    int exhausted_count = 0;
+    while (exhausted_count < 1024) {
+        int extra_fd = open(FILE_NAME, O_RDWR);
+        if (extra_fd < 0)
+            break;
+        exhausted_fds[exhausted_count++] = extra_fd;
+    }
+    CHECK(exhausted_count < 1024 && errno == EMFILE, "exhaust descriptor table");
+    CHECK(mkdir(MKDIR_FIXTURE "/exhausted", 0755) == 0,
+          "mkdir does not require a free descriptor");
+    for (int i = 0; i < exhausted_count; ++i)
+        CHECK(close(exhausted_fds[i]) == 0, "close exhausted descriptor");
+    CHECK(stat(MKDIR_FIXTURE "/absolute", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode) &&
+          stat(MKDIR_FIXTURE "/nested", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode) &&
+          stat(MKDIR_FIXTURE "/other", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode) &&
+          stat(MKDIR_FIXTURE "/cwd", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode) &&
+          stat(MKDIR_FIXTURE "/native", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode), "mkdir creates directories");
     char long_name[97];
     memset(long_name, 'q', sizeof(long_name) - 1);
     long_name[sizeof(long_name) - 1] = '\0';
