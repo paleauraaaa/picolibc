@@ -1,6 +1,7 @@
 #include <pthread.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -31,17 +32,18 @@ int pthread_attr_destroy(pthread_attr_t *attr) {
     return 0;
 }
 
-int pthread_attr_setstacksize(pthread_attr_t *attr, int stack_size) {
-    if (!attr)
-        return -1;
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stack_size) {
+    /* Keep the former signed range and leave room for kernel alignment. */
+    if (!attr || stack_size < PTHREAD_STACK_MIN || stack_size > INT_MAX)
+        return EINVAL;
 
     attr->__stack_size = stack_size;
     return 0;
 }
 
-int pthread_attr_getstacksize(pthread_attr_t *attr, int *stack_size) {
+int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stack_size) {
     if (!attr || !stack_size)
-        return -1;
+        return EINVAL;
 
     *stack_size = attr->__stack_size;
     return 0;

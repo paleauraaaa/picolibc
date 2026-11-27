@@ -3,6 +3,7 @@
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
+#include <stddef.h>
 
 _BEGIN_STD_C
 
@@ -14,8 +15,10 @@ typedef int pthread_t;
 #define PTHREAD_CREATE_JOINABLE     0
 #define PTHREAD_CREATE_DETACHED     1
 
+#define PTHREAD_STACK_MIN           16384
+
 typedef struct pthread_attr_t {
-    int __stack_size;
+    size_t __stack_size;
     int __detachstate;
 } pthread_attr_t;
 
@@ -58,8 +61,8 @@ typedef unsigned int pthread_key_t;
 int pthread_attr_init(pthread_attr_t *attr);
 int pthread_attr_destroy(pthread_attr_t *attr);
 
-int pthread_attr_setstacksize(pthread_attr_t *attr, int stack_size);
-int pthread_attr_getstacksize(pthread_attr_t *attr, int *stack_size);
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stack_size);
+int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stack_size);
 
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate);
 int pthread_attr_getdetachstate(pthread_attr_t *attr, int *detachstate);

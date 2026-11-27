@@ -1,8 +1,16 @@
 /* Standalone Xbox guest test; link with the Xbox CRT and kernel/XAM imports. */
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
+
+_Static_assert(__builtin_types_compatible_p(
+                   __typeof__(&pthread_attr_setstacksize),
+                   int (*)(pthread_attr_t *, size_t)), "stack size setter ABI");
+_Static_assert(__builtin_types_compatible_p(
+                   __typeof__(&pthread_attr_getstacksize),
+                   int (*)(const pthread_attr_t *, size_t *)), "stack size getter ABI");
 
 static pthread_mutex_t mutex;
 static pthread_mutex_t stalled_mutex;
@@ -10,6 +18,12 @@ static atomic_int ready;
 static atomic_int release_owner;
 static atomic_int waiter_ready;
 static int counter;
+
+static void *
+stack_worker(void *arg)
+{
+    return arg;
+}
 
 static int
 check(int condition, const char *message)
@@ -85,6 +99,36 @@ main(void)
 {
     pthread_t workers[4];
     pthread_t owner, waiter;
+    pthread_attr_t thread_attr;
+    size_t stack_size;
+    if (!check(pthread_attr_init(&thread_attr) == 0, "thread attribute init") ||
+        !check(pthread_attr_getstacksize(&thread_attr, &stack_size) == 0 &&
+               stack_size == 0, "default stack size") ||
+        !check(pthread_attr_setstacksize(&thread_attr, PTHREAD_STACK_MIN) == 0 &&
+               pthread_attr_getstacksize(&thread_attr, &stack_size) == 0 &&
+               stack_size == PTHREAD_STACK_MIN, "minimum stack size") ||
+        !check(pthread_attr_setstacksize(&thread_attr, PTHREAD_STACK_MIN - 1) == EINVAL &&
+               pthread_attr_getstacksize(&thread_attr, &stack_size) == 0 &&
+               stack_size == PTHREAD_STACK_MIN, "reject stack below minimum") ||
+        !check(pthread_attr_setstacksize(&thread_attr, 0) == EINVAL,
+               "reject zero stack size") ||
+        !check(pthread_attr_setstacksize(&thread_attr, (size_t)INT_MAX + 1) == EINVAL &&
+               pthread_attr_getstacksize(&thread_attr, &stack_size) == 0 &&
+               stack_size == PTHREAD_STACK_MIN, "reject oversized stack") ||
+        !check(pthread_attr_setstacksize(&thread_attr, INT_MAX) == 0 &&
+               pthread_attr_getstacksize(&thread_attr, &stack_size) == 0 &&
+               stack_size == INT_MAX &&
+               pthread_attr_setstacksize(&thread_attr, PTHREAD_STACK_MIN) == 0,
+               "maximum stack attribute") ||
+        !check(pthread_attr_setstacksize(NULL, PTHREAD_STACK_MIN) == EINVAL &&
+               pthread_attr_getstacksize(NULL, &stack_size) == EINVAL &&
+               pthread_attr_getstacksize(&thread_attr, NULL) == EINVAL,
+               "reject invalid stack attributes") ||
+        !check(pthread_create(&owner, &thread_attr, stack_worker, NULL) == 0,
+               "create thread with minimum stack") ||
+        !check(join_ok(owner), "join minimum stack thread") ||
+        !check(pthread_attr_destroy(&thread_attr) == 0, "thread attribute destroy"))
+        return 1;
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
     pthread_condattr_t cond_attr = { 0 };
     pthread_key_t key = 123;

@@ -386,6 +386,12 @@ Once configured, you can compile the libraries with
     $ ninja install
     ...
 
+### Xbox 360 thread stack sizes
+
+`pthread_attr_setstacksize` accepts sizes from `PTHREAD_STACK_MIN` (16384)
+through `INT_MAX`; an initialized attribute uses the kernel default until a
+stack size is set, and `pthread_attr_getstacksize` reports that default as zero.
+
 ### Xbox 360 file metadata
 
 Xbox `dup` and `dup2` share a file offset between duplicates, while separate
