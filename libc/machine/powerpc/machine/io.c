@@ -295,23 +295,35 @@ typedef struct file_descriptor {
     char           *path;
     bool            is_dir;
     int             rcount;
+    int             console;
 } file_descriptor_t;
 
 typedef struct {
-    file_descriptor_t *file;
     off_t off;
+    int rcount;
+} file_offset_t;
+
+typedef struct {
+    file_descriptor_t *file;
+    file_offset_t *offset;
 } fd_slot_t;
 
-static file_descriptor_t s_files[MAX_FD - 3];
-static fd_slot_t s_fds[MAX_FD - 3];
+static file_descriptor_t s_files[MAX_FD];
+static file_descriptor_t s_stdout_file = { .access = FILE_WRITE_DATA, .rcount = 1, .console = 1 };
+static file_descriptor_t s_stderr_file = { .access = FILE_WRITE_DATA, .rcount = 1, .console = 2 };
+static file_offset_t s_offsets[MAX_FD] = { { .rcount = 1 }, { .rcount = 1 } };
+static fd_slot_t s_fds[MAX_FD] = {
+    [STDOUT_FILENO] = { &s_stdout_file, &s_offsets[0] },
+    [STDERR_FILENO] = { &s_stderr_file, &s_offsets[1] }
+};
 static pthread_mutex_t s_fds_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static fd_slot_t *
 file_slot(int fd)
 {
-    if (fd < 3 || fd >= MAX_FD || s_fds[fd - 3].file == NULL)
+    if (fd < 0 || fd >= MAX_FD || s_fds[fd].file == NULL)
         return NULL;
-    return &s_fds[fd - 3];
+    return &s_fds[fd];
 }
 
 file_descriptor_t* file_descriptor(int fd) {
@@ -531,9 +543,12 @@ int openat(int dirfd, const char* path, int flags, ...) {
     file_descriptor_t *free_file = NULL;
     file_descriptor_t *f = NULL;
     /* Directory enumeration state belongs to the native handle. */
-    for (int i = 0; i < MAX_FD - 3; i++) {
+    file_offset_t *free_offset = NULL;
+    for (int i = 0; i < MAX_FD; i++) {
         if (fd == -1 && s_fds[i].file == NULL)
             fd = i;
+        if (free_offset == NULL && s_offsets[i].rcount == 0)
+            free_offset = &s_offsets[i];
         if (s_files[i].handle == NULL) {
             if (free_file == NULL)
                 free_file = &s_files[i];
@@ -545,7 +560,7 @@ int openat(int dirfd, const char* path, int flags, ...) {
             f = &s_files[i];
         }
     }
-    if (fd == -1) {
+    if (fd == -1 || free_offset == NULL) {
         pthread_mutex_unlock(&s_fds_mutex);
         errno = EMFILE;
         return -1;
@@ -557,9 +572,11 @@ int openat(int dirfd, const char* path, int flags, ...) {
         }
         ++f->rcount;
         s_fds[fd].file = f;
-        s_fds[fd].off = 0;
+        free_offset->off = 0;
+        free_offset->rcount = 1;
+        s_fds[fd].offset = free_offset;
         pthread_mutex_unlock(&s_fds_mutex);
-        return fd + 3;
+        return fd;
     }
     if (free_file == NULL) {
         pthread_mutex_unlock(&s_fds_mutex);
@@ -600,42 +617,94 @@ int openat(int dirfd, const char* path, int flags, ...) {
     f->is_dir = (flags & O_DIRECTORY) != 0;
     f->rcount = 1;
     s_fds[fd].file = f;
-    s_fds[fd].off = 0;
+    free_offset->off = 0;
+    free_offset->rcount = 1;
+    s_fds[fd].offset = free_offset;
     pthread_mutex_unlock(&s_fds_mutex);
-    return fd + 3;
+    return fd;
 }
 
-int close (int fd) {
-    pthread_mutex_lock(&s_fds_mutex);
+static int close_locked(int fd) {
     fd_slot_t *slot = file_slot(fd);
     if (slot == NULL) {
-        pthread_mutex_unlock(&s_fds_mutex);
         errno = EBADF;
         return -1;
     }
 
     file_descriptor_t *f = slot->file;
-    slot->file = NULL;
-    if (--f->rcount != 0) {
-        pthread_mutex_unlock(&s_fds_mutex);
-        return 0;
+    if (f->rcount == 1 && !f->console) {
+        NTSTATUS status = NtClose(f->handle);
+        if (!NT_SUCCESS(status)) {
+            errno = nt_status_to_errno(status);
+            return -1;
+        }
+        f->handle = NULL;
+        free(f->path);
+        f->path = NULL;
     }
-    NTSTATUS status = NtClose(f->handle);
-    f->handle = NULL;
-    free(f->path);
-    f->path = NULL;
+    --slot->offset->rcount;
+    slot->offset = NULL;
+    slot->file = NULL;
+    --f->rcount;
+    return 0;
+}
+
+int close(int fd) {
+    pthread_mutex_lock(&s_fds_mutex);
+    int result = close_locked(fd);
     pthread_mutex_unlock(&s_fds_mutex);
-    if (!NT_SUCCESS(status)) {
-        errno = nt_status_to_errno(status);
+    return result;
+}
+
+int dup(int fd) {
+    pthread_mutex_lock(&s_fds_mutex);
+    fd_slot_t *source = file_slot(fd);
+    if (source == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EBADF;
         return -1;
     }
+    int newfd;
+    for (newfd = 0; newfd < MAX_FD && s_fds[newfd].file != NULL; ++newfd)
+        ;
+    if (newfd == MAX_FD) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EMFILE;
+        return -1;
+    }
+    s_fds[newfd] = *source;
+    ++source->file->rcount;
+    ++source->offset->rcount;
+    pthread_mutex_unlock(&s_fds_mutex);
+    return newfd;
+}
 
-    return 0;
+int dup2(int oldfd, int newfd) {
+    pthread_mutex_lock(&s_fds_mutex);
+    fd_slot_t *source = file_slot(oldfd);
+    if (source == NULL || newfd < 0 || newfd >= MAX_FD) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EBADF;
+        return -1;
+    }
+    if (oldfd == newfd) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        return newfd;
+    }
+    if (s_fds[newfd].file != NULL && close_locked(newfd) < 0) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        return -1;
+    }
+    s_fds[newfd] = *source;
+    ++source->file->rcount;
+    ++source->offset->rcount;
+    pthread_mutex_unlock(&s_fds_mutex);
+    return newfd;
 }
 
 static int ftruncate_locked(int fd, off_t length) {
     file_descriptor_t *f = file_descriptor(fd);
-    if (f == NULL || !(f->access & FILE_WRITE_DATA)) {
+    if (f == NULL || f->console || !(f->access & FILE_WRITE_DATA)) {
         errno = EBADF;
         return -1;
     }
@@ -661,6 +730,10 @@ static off_t lseek_locked(int fd, off_t offset, int whence) {
         return -1;
     }
     file_descriptor_t *f = slot->file;
+    if (f->console) {
+        errno = ESPIPE;
+        return -1;
+    }
 
     uint64_t file_size = 0;
     X_IO_STATUS_BLOCK IoStatusBlock;
@@ -682,7 +755,7 @@ static off_t lseek_locked(int fd, off_t offset, int whence) {
             new_off = offset;
             break;
         case SEEK_CUR:
-            new_off = slot->off + offset;
+            new_off = slot->offset->off + offset;
             break;
         case SEEK_END:
             new_off = file_size + offset;
@@ -697,7 +770,7 @@ static off_t lseek_locked(int fd, off_t offset, int whence) {
         return -1;
     }
 
-    slot->off = new_off;
+    slot->offset->off = new_off;
     return new_off;
 }
 
@@ -721,7 +794,7 @@ static ssize_t read_locked(int fd, void *buf, size_t count) {
         return -1;
     }
 
-    LARGE_INTEGER off = { .QuadPart = slot->off };
+    LARGE_INTEGER off = { .QuadPart = slot->offset->off };
     X_IO_STATUS_BLOCK IoStatusBlock;
     NTSTATUS status = NtReadFile(
         f->handle,
@@ -742,7 +815,7 @@ static ssize_t read_locked(int fd, void *buf, size_t count) {
     }
 
     uint64_t bytes_read = IoStatusBlock.Information;
-    slot->off += bytes_read;
+    slot->offset->off += bytes_read;
     return bytes_read;
 }
 
@@ -787,11 +860,11 @@ ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
 }
 
 static ssize_t pwrite_locked(int fd, const void *buf, size_t count, off_t offset) {
-    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f != NULL && f->console) {
         errno = ESPIPE;
         return -1;
     }
-    file_descriptor_t *f = file_descriptor(fd);
     if (f == NULL || !(f->access & FILE_WRITE_DATA)) {
         errno = EBADF;
         return -1;
@@ -821,6 +894,8 @@ ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
     return result;
 }
 
+static ssize_t console_write(int console, const void *buf, size_t count);
+
 static ssize_t write_locked(int fd, const void *buf, size_t count) {
     fd_slot_t *slot = file_slot(fd);
     if (slot == NULL) {
@@ -833,17 +908,19 @@ static ssize_t write_locked(int fd, const void *buf, size_t count) {
         errno = EBADF;
         return -1;
     }
+    if (f->console)
+        return console_write(f->console, buf, count);
 
     if (f->access & FILE_APPEND_DATA) {
         off_t off = lseek_locked(fd, 0, SEEK_END);
         if (off < 0)
             return -1;
 
-        slot->off = off;
+        slot->offset->off = off;
     }
 
     X_IO_STATUS_BLOCK IoStatusBlock;
-    LARGE_INTEGER off = { .QuadPart = slot->off };
+    LARGE_INTEGER off = { .QuadPart = slot->offset->off };
     NTSTATUS status = NtWriteFile(
         f->handle,
         NULL,
@@ -860,15 +937,11 @@ static ssize_t write_locked(int fd, const void *buf, size_t count) {
     }
 
     uint64_t bytes_written = IoStatusBlock.Information;
-    slot->off += bytes_written;
+    slot->offset->off += bytes_written;
     return bytes_written;
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    if (fd == STDOUT_FILENO)
-        return fwrite(buf, 1, count, stdout);
-    if (fd == STDERR_FILENO)
-        return fwrite(buf, 1, count, stderr);
     pthread_mutex_lock(&s_fds_mutex);
     ssize_t result = write_locked(fd, buf, count);
     pthread_mutex_unlock(&s_fds_mutex);
@@ -886,43 +959,63 @@ FILE *const stderr = &__stderr;
 char   __stdout_buf[STDOUT_BUF_SIZE] = {0};
 size_t __stdout_buf_pos              =  0;
 
-int __stdio_flush(FILE *stream) {
-    if (stream == stdout && __stdout_buf_pos != 0) {
+static void console_flush(void) {
+    if (__stdout_buf_pos != 0) {
         __stdout_buf[__stdout_buf_pos] = '\0';
         DbgPrint("%s", __stdout_buf);
         __stdout_buf_pos = 0;
         __stdout_buf[0] = '\0';
     }
+}
+
+int __stdio_flush(FILE *stream) {
+    if (stream == stdout) {
+        pthread_mutex_lock(&s_fds_mutex);
+        console_flush();
+        pthread_mutex_unlock(&s_fds_mutex);
+    }
     return 0;
 }
 
-int __stdio_putc(char c, FILE *stream) {
-    if (stream == stderr) {
+static void console_putc(int console, char c) {
+    if (console == 2) {
         if (c == '\0')
             DbgPrint("\\0");
         else
             DbgPrint("%c", (unsigned char)c);
-        return 0;
+        return;
     }
 
-    if (stream == stdout) {
+    if (console == 1) {
         if (c == '\0') {
             if (__stdout_buf_pos >= STDOUT_BUF_SIZE - 2)
-                __stdio_flush(stream);
+                console_flush();
             __stdout_buf[__stdout_buf_pos++] = '\\';
             __stdout_buf[__stdout_buf_pos++] = '0';
-            return 0;
+            return;
         }
 
         if (__stdout_buf_pos >= STDOUT_BUF_SIZE - 1)
-            __stdio_flush(stream);
+            console_flush();
         __stdout_buf[__stdout_buf_pos++] = c;
 
         if (c == '\n')
-            return __stdio_flush(stream);
+            console_flush();
     }
+}
 
-    return 0;
+static ssize_t console_write(int console, const void *buf, size_t count) {
+    if (count > SSIZE_MAX)
+        count = SSIZE_MAX;
+    const unsigned char *bytes = buf;
+    for (size_t i = 0; i < count; ++i)
+        console_putc(console, (char)bytes[i]);
+    return count;
+}
+
+int __stdio_putc(char c, FILE *stream) {
+    int fd = stream == stdout ? STDOUT_FILENO : STDERR_FILENO;
+    return write(fd, &c, 1) == 1 ? 0 : -1;
 }
 
 static int
@@ -960,7 +1053,8 @@ int fstat(int fd, struct stat *buf) {
     NTSTATUS status;
 
     int ret = -1;
-    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f != NULL && f->console) {
         if (buf == NULL) {
             errno = EFAULT;
             goto done;
@@ -971,7 +1065,6 @@ int fstat(int fd, struct stat *buf) {
         goto done;
     }
 
-    file_descriptor_t *f = file_descriptor(fd);
     if (f == NULL || f->handle == NULL) {
         errno = EBADF;
         goto done;
@@ -1175,7 +1268,7 @@ int unlinkat(int dirfd, const char *path, int flags) {
     enum { DELETE_ACCESS = 0x00010000 };
 
     pthread_mutex_lock(&s_fds_mutex);
-    for (int i = 0; i < MAX_FD - 3; i++) {
+    for (int i = 0; i < MAX_FD; i++) {
         if (s_files[i].handle != NULL &&
             strcasecmp(s_files[i].path, native_path) == 0) {
             int error = s_files[i].is_dir ? EISDIR : EBUSY;
@@ -1209,7 +1302,7 @@ int unlinkat(int dirfd, const char *path, int flags) {
     status = NtQueryInformationFile(handle, &io_status, &target_id,
                                     sizeof(target_id), FileInternalInformation);
     if (NT_SUCCESS(status)) {
-        for (int i = 0; i < MAX_FD - 3; i++) {
+        for (int i = 0; i < MAX_FD; i++) {
             if (s_files[i].handle == NULL)
                 continue;
             X_FILE_INTERNAL_INFORMATION open_id;
@@ -1323,7 +1416,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
         goto done;
     }
 
-    for (int i = 0; i < MAX_FD - 3; i++) {
+    for (int i = 0; i < MAX_FD; i++) {
         if (s_files[i].handle != NULL &&
             (source_is_dir || strcasecmp(s_files[i].path, old_native) == 0 ||
              strcasecmp(s_files[i].path, new_native) == 0)) {
@@ -1376,7 +1469,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
         }
     }
 
-    for (int i = 0; i < MAX_FD - 3; i++) {
+    for (int i = 0; i < MAX_FD; i++) {
         if (s_files[i].handle == NULL)
             continue;
         X_FILE_INTERNAL_INFORMATION open_id;

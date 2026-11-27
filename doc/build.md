@@ -388,6 +388,11 @@ Once configured, you can compile the libraries with
 
 ### Xbox 360 file metadata
 
+Xbox `dup` and `dup2` share a file offset between duplicates, while separate
+opens have independent offsets. Standard output and error initially target
+the debug console; standard input starts closed. Duplicating onto a standard
+descriptor redirects subsequent descriptor and stdio output.
+
 The Xbox `fstatat` implementation supports directory-relative paths and
 `AT_EMPTY_PATH`. For nonempty paths, `AT_SYMLINK_NOFOLLOW` returns `ENOSYS`:
 the port does not yet support no-follow metadata queries.
