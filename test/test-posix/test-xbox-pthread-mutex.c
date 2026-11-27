@@ -85,6 +85,27 @@ main(void)
 {
     pthread_t workers[4];
     pthread_t owner, waiter;
+    pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+    pthread_condattr_t cond_attr = { 0 };
+    pthread_key_t key = 123;
+    pthread_mutexattr_t stub_attr = { 0 };
+    if (!check(pthread_mutexattr_settype(&stub_attr, PTHREAD_MUTEX_NORMAL) == ENOSYS, "mutex type unsupported") ||
+        !check(pthread_condattr_init(&cond_attr) == ENOSYS, "condattr init unsupported") ||
+        !check(pthread_condattr_setclock(&cond_attr, 0) == ENOSYS, "condattr clock unsupported") ||
+        !check(pthread_condattr_destroy(&cond_attr) == ENOSYS, "condattr destroy unsupported") ||
+        !check(pthread_cond_init(&cond, &cond_attr) == ENOSYS, "cond init unsupported") ||
+        !check(pthread_cond_signal(&cond) == ENOSYS, "cond signal unsupported") ||
+        !check(pthread_cond_broadcast(&cond) == ENOSYS, "cond broadcast unsupported") ||
+        !check(pthread_cond_wait(&cond, &mutex) == ENOSYS, "cond wait unsupported") ||
+        !check(pthread_cond_timedwait(&cond, &mutex, NULL) == ENOSYS, "cond timedwait unsupported") ||
+        !check(pthread_cond_destroy(&cond) == ENOSYS, "cond destroy unsupported") ||
+        !check(pthread_key_create(&key, NULL) == ENOSYS && key == 123, "key create unsupported") ||
+        !check(pthread_key_delete(key) == ENOSYS, "key delete unsupported") ||
+        !check(pthread_setspecific(key, &key) == ENOSYS, "setspecific unsupported"))
+        return 1;
+    errno = 0;
+    if (!check(pthread_getspecific(key) == NULL && errno == ENOSYS, "getspecific unsupported"))
+        return 1;
     if (!check(pthread_mutex_init(&mutex, NULL) == 0, "default mutex init") ||
         !check(pthread_mutex_lock(&mutex) == 0, "default mutex lock") ||
         !check(pthread_mutex_trylock(&mutex) == EBUSY, "trylock busy") ||

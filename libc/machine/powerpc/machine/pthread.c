@@ -490,3 +490,83 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex) {
     pthread_unlock();
     return ret;
 }
+
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type) {
+    (void)attr;
+    (void)type;
+    return ENOSYS;
+}
+
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) {
+    (void)cond;
+    (void)attr;
+    return ENOSYS;
+}
+
+int pthread_cond_destroy(pthread_cond_t *cond) {
+    (void)cond;
+    return ENOSYS;
+}
+
+int pthread_cond_signal(pthread_cond_t *cond) {
+    (void)cond;
+    return ENOSYS;
+}
+
+int pthread_cond_broadcast(pthread_cond_t *cond) {
+    (void)cond;
+    return ENOSYS;
+}
+
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+    (void)cond;
+    (void)mutex;
+    return ENOSYS;
+}
+
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           const struct timespec *abstime) {
+    (void)cond;
+    (void)mutex;
+    (void)abstime;
+    return ENOSYS;
+}
+
+int pthread_condattr_init(pthread_condattr_t *attr) {
+    (void)attr;
+    return ENOSYS;
+}
+
+int pthread_condattr_destroy(pthread_condattr_t *attr) {
+    (void)attr;
+    return ENOSYS;
+}
+
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id) {
+    (void)attr;
+    (void)clock_id;
+    return ENOSYS;
+}
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *)) {
+    (void)key;
+    (void)destructor;
+    return ENOSYS;
+}
+
+int pthread_key_delete(pthread_key_t key) {
+    (void)key;
+    return ENOSYS;
+}
+
+void *pthread_getspecific(pthread_key_t key) {
+    (void)key;
+    errno = ENOSYS;
+    return NULL;
+}
+
+int pthread_setspecific(pthread_key_t key, const void *value) {
+    (void)key;
+    (void)value;
+    return ENOSYS;
+}

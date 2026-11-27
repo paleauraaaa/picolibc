@@ -2,6 +2,7 @@
 #define _PTHREAD_H_
 
 #include <sys/cdefs.h>
+#include <sys/types.h>
 
 _BEGIN_STD_C
 
@@ -20,6 +21,7 @@ typedef struct pthread_attr_t {
 
 #define PTHREAD_MUTEX_STALLED       0
 #define PTHREAD_MUTEX_ROBUST        1
+#define PTHREAD_MUTEX_NORMAL        0
 
 typedef struct pthread_mutexattr_t {
     int __robustness;
@@ -31,6 +33,19 @@ typedef struct pthread_mutex_t {
     unsigned int            __owner;
     struct pthread_mutex_t *__next_owned;
 } pthread_mutex_t;
+
+/* Placeholder types for the currently unsupported condition variables and keys. */
+typedef struct pthread_cond_t {
+    int __placeholder;
+} pthread_cond_t;
+
+typedef struct pthread_condattr_t {
+    int __placeholder;
+} pthread_condattr_t;
+
+typedef unsigned int pthread_key_t;
+
+#define PTHREAD_COND_INITIALIZER { 0 }
 
 #define PTHREAD_MUTEX_INITIALIZER              \
 {                                              \
@@ -60,6 +75,7 @@ int pthread_mutexattr_init(pthread_mutexattr_t *attr);
 int pthread_mutexattr_destroy(pthread_mutexattr_t *attr);
 int pthread_mutexattr_getrobust(const pthread_mutexattr_t *attr, int *robustness);
 int pthread_mutexattr_setrobust(pthread_mutexattr_t *attr, int robustness);
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr);
 int pthread_mutex_lock(pthread_mutex_t *mutex);
@@ -67,6 +83,23 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex);
 int pthread_mutex_unlock(pthread_mutex_t *mutex);
 int pthread_mutex_destroy(pthread_mutex_t *mutex);
 int pthread_mutex_consistent(pthread_mutex_t *mutex);
+
+struct timespec;
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
+int pthread_cond_destroy(pthread_cond_t *cond);
+int pthread_cond_signal(pthread_cond_t *cond);
+int pthread_cond_broadcast(pthread_cond_t *cond);
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           const struct timespec *abstime);
+int pthread_condattr_init(pthread_condattr_t *attr);
+int pthread_condattr_destroy(pthread_condattr_t *attr);
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id);
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int pthread_key_delete(pthread_key_t key);
+void *pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
 
 void __libc_thread_done(void);
 

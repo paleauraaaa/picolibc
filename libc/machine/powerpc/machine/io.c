@@ -1024,6 +1024,8 @@ int fstat(int fd, struct stat *buf) {
     result.st_blksize = 512;
     result.st_blocks = info.AllocationSize.QuadPart / 512 +
                        (info.AllocationSize.QuadPart % 512 != 0);
+    result.st_uid = 1;
+    result.st_gid = 1;
     *buf = result;
     ret = 0;
 
@@ -1117,16 +1119,20 @@ int mkdirat(int dirfd, const char *path, mode_t mode) {
         .ObjectName = &name,
         .Attributes = 0,
     };
+
     X_IO_STATUS_BLOCK io_status = {0};
     LARGE_INTEGER allocation_size = { .QuadPart = 0 };
     HANDLE handle;
+
     NTSTATUS status = NtCreateFile(
         &handle, FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE, &attrs,
         &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
         FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+
     if (NT_SUCCESS(status))
         status = NtClose(handle);
+
     if (!NT_SUCCESS(status)) {
         errno = nt_status_to_errno(status);
         return -1;
