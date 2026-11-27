@@ -6,6 +6,10 @@ int nt_status_to_errno(NTSTATUS status) {
     switch ((uint32_t)status) {
     case 0xC0000043: /* STATUS_SHARING_VIOLATION */
         return EBUSY;
+    case 0xC00000D4: /* STATUS_NOT_SAME_DEVICE */
+        return EXDEV;
+    case 0xC0000101: /* STATUS_DIRECTORY_NOT_EMPTY */
+        return ENOTEMPTY;
     case STATUS_INVALID_HANDLE:
         return EBADF;
     case STATUS_INVALID_PARAMETER:

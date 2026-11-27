@@ -1212,3 +1212,148 @@ int unlinkat(int dirfd, const char *path, int flags) {
 int unlink(const char *path) {
     return unlinkat(AT_FDCWD, path, 0);
 }
+
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    char old_native[PATH_MAX + 1], new_native[PATH_MAX + 1];
+    size_t old_len, new_len;
+    if (resolve_at_path(olddirfd, oldpath, old_native, sizeof(old_native), &old_len) == -1 ||
+        resolve_at_path(newdirfd, newpath, new_native, sizeof(new_native), &new_len) == -1)
+        return -1;
+
+    ANSI_STRING old_name = { (USHORT)old_len, (USHORT)(old_len + 1), old_native };
+    ANSI_STRING new_name = { (USHORT)new_len, (USHORT)(new_len + 1), new_native };
+    X_OBJECT_ATTRIBUTES old_attrs = { .RootDirectory = NULL, .ObjectName = &old_name, .Attributes = 0 };
+    X_OBJECT_ATTRIBUTES new_attrs = { .RootDirectory = NULL, .ObjectName = &new_name, .Attributes = 0 };
+    X_IO_STATUS_BLOCK io_status = {0};
+    X_FILE_NETWORK_OPEN_INFORMATION old_info, new_info;
+    X_FILE_INTERNAL_INFORMATION old_id, new_id;
+    LARGE_INTEGER allocation_size = { .QuadPart = 0 };
+    HANDLE source = NULL, target = NULL;
+    NTSTATUS status;
+    int error = 0;
+    enum { DELETE_ACCESS = 0x00010000 };
+
+    pthread_mutex_lock(&s_fds_mutex);
+    status = NtQueryFullAttributesFile(&old_attrs, &old_info);
+    if (!NT_SUCCESS(status)) {
+        error = nt_status_to_errno(status);
+        goto done;
+    }
+    status = NtQueryFullAttributesFile(&new_attrs, &new_info);
+    bool target_exists = NT_SUCCESS(status);
+    if (!target_exists && status != (NTSTATUS)STATUS_NO_SUCH_FILE &&
+        status != (NTSTATUS)STATUS_OBJECT_NAME_NOT_FOUND &&
+        status != (NTSTATUS)STATUS_OBJECT_PATH_NOT_FOUND) {
+        error = nt_status_to_errno(status);
+        goto done;
+    }
+    bool source_is_dir = (old_info.Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if ((is_path_separator(oldpath[strlen(oldpath) - 1]) && !source_is_dir) ||
+        (is_path_separator(newpath[strlen(newpath) - 1]) &&
+         (!target_exists || !(new_info.Attributes & FILE_ATTRIBUTE_DIRECTORY)))) {
+        error = ENOTDIR;
+        goto done;
+    }
+    if (strcasecmp(old_native, new_native) == 0)
+        goto done;
+    if (target_exists &&
+        source_is_dir != ((new_info.Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
+        error = source_is_dir ? ENOTDIR : EISDIR;
+        goto done;
+    }
+    for (int i = 0; i < MAX_FD - 3; i++) {
+        if (s_files[i].handle != NULL &&
+            (source_is_dir || strcasecmp(s_files[i].path, old_native) == 0 ||
+             strcasecmp(s_files[i].path, new_native) == 0)) {
+            error = EBUSY;
+            goto done;
+        }
+    }
+    status = NtCreateFile(&source, DELETE_ACCESS | SYNCHRONIZE, &old_attrs,
+                          &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT);
+    if (!NT_SUCCESS(status)) {
+        error = nt_status_to_errno(status);
+        goto done;
+    }
+    status = NtQueryInformationFile(source, &io_status, &old_id, sizeof(old_id),
+                                    FileInternalInformation);
+    if (!NT_SUCCESS(status)) {
+        error = nt_status_to_errno(status);
+        goto done;
+    }
+    if (target_exists) {
+        status = NtCreateFile(&target, SYNCHRONIZE, &new_attrs, &io_status,
+                              &allocation_size, FILE_ATTRIBUTE_NORMAL,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT);
+        if (!NT_SUCCESS(status)) {
+            error = nt_status_to_errno(status);
+            goto done;
+        }
+        status = NtQueryInformationFile(target, &io_status, &new_id, sizeof(new_id),
+                                        FileInternalInformation);
+        if (!NT_SUCCESS(status)) {
+            error = nt_status_to_errno(status);
+            goto done;
+        }
+        if (old_id.IndexNumber == new_id.IndexNumber) {
+            error = EBUSY;
+            goto done;
+        }
+        status = NtClose(target);
+        target = NULL;
+        if (!NT_SUCCESS(status)) {
+            error = nt_status_to_errno(status);
+            goto done;
+        }
+    }
+    for (int i = 0; i < MAX_FD - 3; i++) {
+        if (s_files[i].handle == NULL)
+            continue;
+        X_FILE_INTERNAL_INFORMATION open_id;
+        status = NtQueryInformationFile(s_files[i].handle, &io_status, &open_id,
+                                        sizeof(open_id), FileInternalInformation);
+        if (!NT_SUCCESS(status)) {
+            error = nt_status_to_errno(status);
+            goto done;
+        }
+        if (open_id.IndexNumber == old_id.IndexNumber ||
+            (target_exists && open_id.IndexNumber == new_id.IndexNumber)) {
+            error = EBUSY;
+            goto done;
+        }
+    }
+    X_FILE_RENAME_INFORMATION rename_info = {
+        .ReplaceExisting = TRUE,
+        .RootDirectory = 0,
+        .FileName = new_name,
+    };
+    status = NtSetInformationFile(source, &io_status, &rename_info,
+                                  sizeof(rename_info), FileRenameInformation);
+    if (!NT_SUCCESS(status))
+        error = nt_status_to_errno(status);
+
+done:
+    if (target != NULL) {
+        status = NtClose(target);
+        if (!NT_SUCCESS(status) && !error)
+            error = nt_status_to_errno(status);
+    }
+    if (source != NULL) {
+        status = NtClose(source);
+        if (!NT_SUCCESS(status) && !error)
+            error = nt_status_to_errno(status);
+    }
+    pthread_mutex_unlock(&s_fds_mutex);
+    if (error) {
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
+int rename(const char *oldpath, const char *newpath) {
+    return renameat(AT_FDCWD, oldpath, AT_FDCWD, newpath);
+}

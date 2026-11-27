@@ -119,6 +119,12 @@ main(void)
     dirfd = open(POSIX_CHILD, O_CREAT | O_RDWR | O_DIRECTORY, 0);
     CHECK(dirfd >= 0, "create child directory");
     CHECK(close(dirfd) == 0, "close child directory");
+    CHECK(rename(POSIX_CHILD, POSIX_DIR "/renamed-child") == 0,
+          "rename directory");
+    CHECK(stat(POSIX_DIR "/renamed-child", &other_stat) == 0 &&
+          S_ISDIR(other_stat.st_mode), "renamed directory is accessible");
+    CHECK(rename(POSIX_DIR "/renamed-child", POSIX_CHILD) == 0,
+          "restore renamed directory");
 
     CHECK(chdir("child") == -1, "relative chdir requires initial absolute cwd");
     CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT,
@@ -404,6 +410,99 @@ main(void)
     CHECK(fd >= 0 && close(fd) == 0, "recreate file for unlink");
     CHECK(unlink(FILE_NAME) == 0, "unlink relative to current directory");
     CHECK(unlink(FILE_NAME) == -1 && errno == ENOENT, "verify unlink removal");
+
+    const char *rename_source = "picolibc-rename-source.bin";
+    const char *rename_target = "picolibc-rename-target.bin";
+    CHECK(renameat(-1, NULL, -1, POSIX_CHILD) == -1 && errno == EFAULT,
+          "renameat rejects null source");
+    CHECK(renameat(-1, POSIX_CHILD, -1, NULL) == -1 && errno == EFAULT,
+          "renameat rejects null destination");
+    CHECK(renameat(AT_FDCWD, "", AT_FDCWD, rename_target) == -1 && errno == ENOENT,
+          "renameat rejects empty source");
+    CHECK(rename("missing-rename-file", "missing-rename-file") == -1 && errno == ENOENT,
+          "rename missing path to itself");
+    fd = open(rename_source, O_CREAT | O_EXCL | O_RDWR, 0);
+    CHECK(fd >= 0, "create rename source");
+    CHECK(write(fd, "source", 6) == 6, "write rename source");
+    CHECK(rename(rename_source, rename_target) == -1 && errno == EBUSY,
+          "rename rejects locally open source");
+    CHECK(rename(rename_source, rename_source) == 0,
+          "rename open file to itself");
+    CHECK(close(fd) == 0, "close rename source");
+    CHECK(rename(rename_source, "missing-directory/target") == -1 && errno == ENOENT,
+          "rename to missing directory fails");
+    CHECK(stat(rename_source, &other_stat) == 0, "failed rename preserves source");
+    CHECK(rename(rename_source, rename_target) == 0, "rename file");
+    CHECK(stat(rename_source, &other_stat) == -1 && errno == ENOENT,
+          "rename removes old name");
+    fd = open(rename_target, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buffer, 5) == 5 && memcmp(buffer, "sourc", 5) == 0,
+          "renamed file contents");
+    CHECK(close(fd) == 0, "close renamed file");
+    CHECK(rename("picolibc-rename-target.bin/", rename_source) == -1 && errno == ENOTDIR,
+          "rename rejects trailing slash on file");
+    fd = open(rename_source, O_CREAT | O_EXCL | O_RDWR, 0);
+    CHECK(fd >= 0 && write(fd, "new", 3) == 3 && close(fd) == 0,
+          "create replacement source");
+    fd = open(rename_target, O_RDONLY);
+    CHECK(fd >= 0 && rename(rename_source, rename_target) == -1 && errno == EBUSY,
+          "rename rejects locally open destination");
+    CHECK(close(fd) == 0, "close replacement destination");
+    CHECK(rename(rename_source, rename_target) == 0, "replace existing file");
+    fd = open(rename_target, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buffer, 3) == 3 && memcmp(buffer, "new", 3) == 0,
+          "replacement file contents");
+    CHECK(close(fd) == 0, "close replacement file");
+    base_dirfd = open(POSIX_DIR, O_RDONLY | O_DIRECTORY);
+    child_dirfd = open(POSIX_CHILD, O_RDONLY | O_DIRECTORY);
+    CHECK(base_dirfd >= 0 && child_dirfd >= 0, "open renameat directories");
+    CHECK(renameat(child_dirfd, rename_target, base_dirfd, rename_source) == 0,
+          "renameat across directories");
+    CHECK(openat(child_dirfd, rename_target, O_RDONLY) == -1 && errno == ENOENT,
+          "renameat removes old name");
+    fd = openat(base_dirfd, rename_source, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buffer, 3) == 3 && memcmp(buffer, "new", 3) == 0,
+          "renameat moved file contents");
+    CHECK(close(fd) == 0 && unlinkat(base_dirfd, rename_source, 0) == 0,
+          "remove renameat test file");
+    CHECK(renameat(-1, rename_target, base_dirfd, rename_source) == -1 && errno == EBADF,
+          "renameat rejects invalid source dirfd");
+    CHECK(close(child_dirfd) == 0 && close(base_dirfd) == 0,
+          "close renameat directories");
+
+    char native_source[] = "game:\\picolibc-native-rename-source.bin";
+    char native_target[] = "game:\\picolibc-native-rename-target.bin";
+    fd = open(native_source, O_CREAT | O_EXCL | O_RDWR, 0);
+    CHECK(fd >= 0 && close(fd) == 0, "create native rename source");
+    fd = open(native_target, O_CREAT | O_EXCL | O_RDWR, 0);
+    CHECK(fd >= 0, "create native rename target");
+    name = (ANSI_STRING){ sizeof(native_source) - 1, sizeof(native_source), native_source };
+    attrs.ObjectName = &name;
+    status = NtCreateFile(&native_handle, 0x00010000 | SYNCHRONIZE, &attrs,
+                          &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    CHECK(NT_SUCCESS(status), "open native rename source");
+    X_FILE_RENAME_INFORMATION rename_info = {
+        .ReplaceExisting = FALSE,
+        .RootDirectory = 0,
+        .FileName = { sizeof(native_target) - 1, sizeof(native_target), native_target },
+    };
+    status = NtSetInformationFile(native_handle, &io_status, &rename_info,
+                                  sizeof(rename_info), FileRenameInformation);
+    CHECK(status == (NTSTATUS)STATUS_OBJECT_NAME_COLLISION,
+          "native rename honors no-replace");
+    rename_info.ReplaceExisting = TRUE;
+    status = NtSetInformationFile(native_handle, &io_status, &rename_info,
+                                  sizeof(rename_info), FileRenameInformation);
+    CHECK(status == (NTSTATUS)0xc0000043, "native rename rejects open target");
+    CHECK(write(fd, "ok", 2) == 2, "failed native rename preserves target handle");
+    CHECK(close(fd) == 0, "close native rename target");
+    status = NtSetInformationFile(native_handle, &io_status, &rename_info,
+                                  sizeof(rename_info), FileRenameInformation);
+    CHECK(NT_SUCCESS(status) && NT_SUCCESS(NtClose(native_handle)),
+          "native rename replaces closed target");
+    CHECK(unlink(native_target) == 0, "remove native rename target");
 
     puts("PICO_PATH_PASS");
     return 0;
