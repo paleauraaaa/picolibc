@@ -117,7 +117,7 @@ main(void)
     CHECK(memcmp(&file_stat, &other_stat, sizeof(file_stat)) == 0,
           "fstatat leaves buffer unchanged on error");
     int shared_dirfd = open(POSIX_DIR, O_RDWR | O_DIRECTORY);
-    CHECK(shared_dirfd >= 0 && shared_dirfd != dirfd, "open shared directory");
+    CHECK(shared_dirfd >= 0 && shared_dirfd != dirfd, "open another directory descriptor");
     DIR *stream = fdopendir(dirfd);
     CHECK(stream != NULL, "fdopendir directory");
     CHECK(fstat(dirfd, &other_stat) == 0 && S_ISDIR(other_stat.st_mode),
@@ -126,7 +126,7 @@ main(void)
     CHECK(fstat(dirfd, &other_stat) == -1 && errno == EBADF,
           "closedir closes descriptor");
     CHECK(fstat(shared_dirfd, &other_stat) == 0 && close(shared_dirfd) == 0,
-          "closedir preserves another shared descriptor");
+          "closedir preserves another directory descriptor");
     dirfd = open(POSIX_DIR, O_WRONLY | O_DIRECTORY);
     CHECK(dirfd >= 0, "open write-only directory");
     CHECK(fdopendir(dirfd) == NULL && errno == EBADF,
@@ -180,6 +180,116 @@ main(void)
     CHECK(fstat(fd, NULL) == -1 && errno == EFAULT, "fstat null buffer");
     CHECK(fstat(fd, &file_stat) == 0 && file_stat.st_size == 0, "fstat empty file");
     CHECK(write(fd, "paths", sizeof(buffer)) == sizeof(buffer), "write");
+    char long_name[97];
+    memset(long_name, 'q', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    int long_fd = open(long_name, O_CREAT | O_EXCL | O_RDWR, 0);
+    CHECK(long_fd >= 0 && close(long_fd) == 0, "create long directory entry");
+
+    DIR *streams[2] = { opendir(POSIX_CHILD), opendir(POSIX_CHILD) };
+    CHECK(streams[0] != NULL && streams[1] != NULL, "open independent streams");
+    int found[2] = { 0, 0 };
+    int done[2] = { 0, 0 };
+    for (int i = 0; i < 10000 && (!done[0] || !done[1]); ++i) {
+        int which = i % 2;
+        if (done[which])
+            continue;
+        errno = 0;
+        struct dirent *entry = readdir(streams[which]);
+        if (entry == NULL) {
+            CHECK(errno == 0, "readdir end of stream");
+            done[which] = 1;
+        } else if (strcmp(entry->d_name, FILE_NAME) == 0) {
+            CHECK(entry->d_type == DT_REG && !(found[which] & 1),
+                  "readdir regular file");
+            CHECK(fstat(fd, &other_stat) == 0 && entry->d_ino == other_stat.st_ino,
+                  "readdir file ID");
+            found[which] |= 1;
+        } else if (strcmp(entry->d_name, long_name) == 0) {
+            CHECK(entry->d_type == DT_REG && !(found[which] & 2),
+                  "readdir long name");
+            found[which] |= 2;
+        }
+    }
+    CHECK(done[0] && done[1] && found[0] == 3 && found[1] == 3,
+          "independent streams enumerate all entries");
+    errno = EDOM;
+    CHECK(readdir(streams[0]) == NULL && errno == EDOM,
+          "readdir preserves errno at end");
+    CHECK(closedir(streams[0]) == 0 && closedir(streams[1]) == 0,
+          "close independent streams");
+
+    stream = opendir(POSIX_DIR);
+    CHECK(stream != NULL, "open parent directory stream");
+    int found_child = 0;
+    struct dirent *entry;
+    for (;;) {
+        errno = 0;
+        entry = readdir(stream);
+        if (entry == NULL)
+            break;
+        if (strcmp(entry->d_name, "child") == 0) {
+            CHECK(entry->d_type == DT_DIR, "readdir directory type");
+            CHECK(stat(POSIX_CHILD, &other_stat) == 0 &&
+                  entry->d_ino == other_stat.st_ino, "readdir directory ID");
+            found_child = 1;
+        }
+    }
+    CHECK(errno == 0 && found_child, "readdir finds child directory");
+    CHECK(closedir(stream) == 0, "close parent directory stream");
+
+    stream = opendir(POSIX_CHILD);
+    CHECK(stream != NULL, "open stream for batched records");
+    memset(stream->buf, 0, sizeof(stream->buf));
+    ULONG length = strlen(FILE_NAME);
+    ULONG next = (64 + length + 7) & ~7U;
+    memcpy(stream->buf, &next, sizeof(next));
+    memcpy(stream->buf + 60, &length, sizeof(length));
+    memcpy(stream->buf + 64, FILE_NAME, length);
+    length = strlen(long_name);
+    memcpy(stream->buf + next + 60, &length, sizeof(length));
+    memcpy(stream->buf + next + 64, long_name, length);
+    stream->offset = 0;
+    stream->count = next + 64 + length;
+    entry = readdir(stream);
+    CHECK(entry != NULL && strcmp(entry->d_name, FILE_NAME) == 0 &&
+          entry->d_type == DT_REG, "first batched directory record");
+    entry = readdir(stream);
+    CHECK(entry != NULL && strcmp(entry->d_name, long_name) == 0 &&
+          entry->d_type == DT_REG, "second batched directory record");
+    next = 65;
+    memcpy(stream->buf, &next, sizeof(next));
+    stream->offset = 0;
+    stream->count = 200;
+    CHECK(readdir(stream) == NULL && errno == EIO,
+          "readdir rejects malformed record offset");
+    next = 0;
+    length = 256;
+    memcpy(stream->buf, &next, sizeof(next));
+    memcpy(stream->buf + 60, &length, sizeof(length));
+    stream->offset = 0;
+    stream->count = 320;
+    CHECK(readdir(stream) == NULL && errno == ENAMETOOLONG,
+          "readdir rejects unrepresentable name");
+    const char missing_entry[] = "picolibc-readdir-missing-entry";
+    length = sizeof(missing_entry) - 1;
+    memcpy(stream->buf + 60, &length, sizeof(length));
+    memcpy(stream->buf + 64, missing_entry, length);
+    stream->offset = 0;
+    stream->count = 64 + length;
+    CHECK(readdir(stream) == NULL && errno == ENOENT,
+          "readdir reports file ID lookup errors");
+    CHECK(closedir(stream) == 0, "close batched record stream");
+    CHECK(unlink(long_name) == 0, "remove long directory entry");
+
+    dirfd = open(POSIX_CHILD, O_RDONLY | O_DIRECTORY);
+    CHECK(dirfd >= 0 && (stream = fdopendir(dirfd)) != NULL,
+          "open stream for invalid descriptor test");
+    CHECK(close(dirfd) == 0, "invalidate stream descriptor");
+    CHECK(readdir(stream) == NULL && errno == EBADF,
+          "readdir rejects closed descriptor");
+    CHECK(closedir(stream) == -1 && errno == EBADF,
+          "closedir releases invalid stream");
     memset(&file_stat, 0xcc, sizeof(file_stat));
     CHECK(fstat(fd, &file_stat) == 0, "fstat written file");
     CHECK(S_ISREG(file_stat.st_mode) && file_stat.st_size == sizeof(buffer),

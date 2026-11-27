@@ -398,4 +398,8 @@ collisions can also cause conservative rejections across volumes.
 implemented. No-follow behavior for file symlinks has not been verified.
 
 Xbox `fdopendir` and `opendir` create directory streams that `closedir`
-releases. Directory enumeration with `readdir` is not yet implemented.
+releases. `readdir` opens each entry to obtain its file ID, since the native
+directory records do not contain one; an entry that cannot be opened or
+queried causes `readdir` to fail. Directory descriptors use separate native
+handles so streams enumerate independently. `rewinddir` and `dirfd` are not
+yet implemented for Xbox.

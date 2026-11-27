@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -529,13 +530,15 @@ int openat(int dirfd, const char* path, int flags, ...) {
     int fd = -1;
     file_descriptor_t *free_file = NULL;
     file_descriptor_t *f = NULL;
+    /* Directory enumeration state belongs to the native handle. */
     for (int i = 0; i < MAX_FD - 3; i++) {
         if (fd == -1 && s_fds[i].file == NULL)
             fd = i;
         if (s_files[i].handle == NULL) {
             if (free_file == NULL)
                 free_file = &s_files[i];
-        } else if (!((flags & O_CREAT) && (flags & O_EXCL)) &&
+        } else if (!(flags & O_DIRECTORY) &&
+                   !((flags & O_CREAT) && (flags & O_EXCL)) &&
                    s_files[i].access == DesiredAccess &&
                    s_files[i].is_dir == ((flags & O_DIRECTORY) != 0) &&
                    strcmp(s_files[i].path, native_path) == 0) {
@@ -1403,4 +1406,133 @@ int closedir(DIR *dir) {
     if (result == -1)
         errno = error;
     return result;
+}
+
+struct _FILE_DIRECTORY_INFORMATION {
+    ULONG NextEntryOffset;
+    ULONG FileIndex;
+    LARGE_INTEGER CreationTime;
+    LARGE_INTEGER LastAccessTime;
+    LARGE_INTEGER LastWriteTime;
+    LARGE_INTEGER ChangeTime;
+    LARGE_INTEGER EndOfFile;
+    LARGE_INTEGER AllocationSize;
+    ULONG FileAttributes;
+    ULONG FileNameLength;
+    CHAR FileName[];
+};
+
+_Static_assert(offsetof(FILE_DIRECTORY_INFORMATION, FileName) == 64,
+               "unexpected Xbox directory information layout");
+
+struct dirent *readdir(DIR *dir) {
+    enum { READ_ATTRIBUTES = 0x80, REPARSE_POINT_ATTRIBUTE = 0x400 };
+    const size_t header_size = offsetof(FILE_DIRECTORY_INFORMATION, FileName);
+    FILE_DIRECTORY_INFORMATION info;
+    X_IO_STATUS_BLOCK io_status = {0};
+
+    pthread_mutex_lock(&s_fds_mutex);
+    file_descriptor_t *file = file_descriptor(dir->fd);
+    if (file == NULL || !file->is_dir || !(file->access & FILE_READ_DATA)) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EBADF;
+        return NULL;
+    }
+
+    if (dir->count == 0) {
+        NTSTATUS status = NtQueryDirectoryFile(
+            file->handle, NULL, NULL, NULL, &io_status,
+            (FILE_DIRECTORY_INFORMATION *)(void *)dir->buf, sizeof(dir->buf),
+            NULL, FALSE);
+        if (!NT_SUCCESS(status)) {
+            pthread_mutex_unlock(&s_fds_mutex);
+            if ((uint32_t)status != 0x80000006 && /* STATUS_NO_MORE_FILES */
+                (uint32_t)status != STATUS_NO_SUCH_FILE)
+                errno = nt_status_to_errno(status);
+            return NULL;
+        }
+        if (io_status.Information < header_size ||
+            io_status.Information > sizeof(dir->buf)) {
+            pthread_mutex_unlock(&s_fds_mutex);
+            errno = EIO;
+            return NULL;
+        }
+        dir->offset = 0;
+        dir->count = io_status.Information;
+    }
+
+    size_t remaining = dir->count - dir->offset;
+    if (remaining < header_size) {
+        dir->count = 0;
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EIO;
+        return NULL;
+    }
+    memcpy(&info, dir->buf + dir->offset, header_size);
+    if (info.FileNameLength == 0 ||
+        info.FileNameLength > remaining - header_size ||
+        (info.NextEntryOffset != 0 &&
+         (info.NextEntryOffset < header_size + info.FileNameLength ||
+          info.NextEntryOffset > remaining - header_size))) {
+        dir->count = 0;
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EIO;
+        return NULL;
+    }
+    if (info.FileNameLength >= sizeof(dir->dirent.d_name)) {
+        dir->count = 0;
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    memcpy(dir->dirent.d_name, dir->buf + dir->offset + header_size,
+           info.FileNameLength);
+    dir->dirent.d_name[info.FileNameLength] = '\0';
+
+    ANSI_STRING name = {
+        .Length = (USHORT)info.FileNameLength,
+        .MaximumLength = (USHORT)(info.FileNameLength + 1),
+        .Buffer = dir->dirent.d_name,
+    };
+    X_OBJECT_ATTRIBUTES attrs = {
+        .RootDirectory = file->handle,
+        .ObjectName = &name,
+        .Attributes = 0,
+    };
+    LARGE_INTEGER allocation_size = { .QuadPart = 0 };
+    X_FILE_INTERNAL_INFORMATION internal_info;
+    HANDLE entry_handle = NULL;
+    NTSTATUS status = NtCreateFile(
+        &entry_handle, READ_ATTRIBUTES | SYNCHRONIZE, &attrs, &io_status,
+        &allocation_size, FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT |
+            ((info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ?
+             FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE));
+    if (NT_SUCCESS(status)) {
+        status = NtQueryInformationFile(entry_handle, &io_status,
+                                        &internal_info, sizeof(internal_info),
+                                        FileInternalInformation);
+        NTSTATUS close_status = NtClose(entry_handle);
+        if (NT_SUCCESS(status))
+            status = close_status;
+    }
+    if (!NT_SUCCESS(status)) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = nt_status_to_errno(status);
+        return NULL;
+    }
+
+    dir->dirent.d_ino = internal_info.IndexNumber;
+    if (info.FileAttributes & (FILE_ATTRIBUTE_DEVICE | REPARSE_POINT_ATTRIBUTE))
+        dir->dirent.d_type = DT_UNKNOWN;
+    else
+        dir->dirent.d_type = (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ?
+                             DT_DIR : DT_REG;
+    if (info.NextEntryOffset == 0)
+        dir->count = 0;
+    else
+        dir->offset += info.NextEntryOffset;
+    pthread_mutex_unlock(&s_fds_mutex);
+    return &dir->dirent;
 }
