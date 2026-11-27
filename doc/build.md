@@ -391,3 +391,8 @@ Once configured, you can compile the libraries with
 The Xbox `fstatat` implementation supports directory-relative paths and
 `AT_EMPTY_PATH`. For nonempty paths, `AT_SYMLINK_NOFOLLOW` returns `ENOSYS`:
 the port does not yet support no-follow metadata queries.
+
+Xbox `unlink` and `unlinkat` reject locally open files with `EBUSY`; file ID
+collisions can also cause conservative rejections across volumes.
+`unlinkat` with `AT_REMOVEDIR` returns `ENOSYS`; directory deletion is not
+implemented. No-follow behavior for file symlinks has not been verified.

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -391,7 +392,10 @@ translate_path(const char *path, char *native_path, size_t capacity,
     return 0;
 }
 
-int openat(int dirfd, const char* path, int flags, ...) {
+static int
+resolve_at_path(int dirfd, const char *path, char *native_path,
+                size_t capacity, size_t *native_length)
+{
     if (path == NULL) {
         errno = EFAULT;
         return -1;
@@ -445,9 +449,13 @@ int openat(int dirfd, const char* path, int flags, ...) {
         path_to_open = cwd_path;
     }
 
+    return translate_path(path_to_open, native_path, capacity, native_length);
+}
+
+int openat(int dirfd, const char* path, int flags, ...) {
     char native_path[PATH_MAX + 1];
     size_t len;
-    if (translate_path(path_to_open, native_path, sizeof(native_path), &len) == -1)
+    if (resolve_at_path(dirfd, path, native_path, sizeof(native_path), &len) == -1)
         return -1;
 
     ANSI_STRING ObjectName = {
@@ -1077,4 +1085,130 @@ int lstat(const char *path, struct stat *buf) {
     (void) buf;
     errno = ENOSYS;
     return -1;
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+    if (flags & ~AT_REMOVEDIR) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (flags & AT_REMOVEDIR) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    char native_path[PATH_MAX + 1];
+    size_t len;
+    if (resolve_at_path(dirfd, path, native_path, sizeof(native_path), &len) == -1)
+        return -1;
+
+    ANSI_STRING name = {
+        .Length = (USHORT)len,
+        .MaximumLength = (USHORT)(len + 1),
+        .Buffer = native_path,
+    };
+    X_OBJECT_ATTRIBUTES attrs = {
+        .RootDirectory = NULL,
+        .ObjectName = &name,
+        .Attributes = 0,
+    };
+    X_IO_STATUS_BLOCK io_status = {0};
+    LARGE_INTEGER allocation_size = { .QuadPart = 0 };
+    HANDLE handle;
+    enum { DELETE_ACCESS = 0x00010000 };
+
+    pthread_mutex_lock(&s_fds_mutex);
+    for (int i = 0; i < MAX_FD - 3; i++) {
+        if (s_files[i].handle != NULL &&
+            strcasecmp(s_files[i].path, native_path) == 0) {
+            int error = s_files[i].is_dir ? EISDIR : EBUSY;
+            pthread_mutex_unlock(&s_fds_mutex);
+            errno = error;
+            return -1;
+        }
+    }
+
+    NTSTATUS status = NtCreateFile(&handle, DELETE_ACCESS | SYNCHRONIZE,
+                                   &attrs, &io_status, &allocation_size,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+    if (!NT_SUCCESS(status)) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+
+    size_t path_length = strlen(path);
+    if (path_length != 0 && is_path_separator(path[path_length - 1])) {
+        NTSTATUS close_status = NtClose(handle);
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = NT_SUCCESS(close_status) ? ENOTDIR : nt_status_to_errno(close_status);
+        return -1;
+    }
+
+    X_FILE_INTERNAL_INFORMATION target_id;
+    status = NtQueryInformationFile(handle, &io_status, &target_id,
+                                    sizeof(target_id), FileInternalInformation);
+    if (NT_SUCCESS(status)) {
+        for (int i = 0; i < MAX_FD - 3; i++) {
+            if (s_files[i].handle == NULL)
+                continue;
+            X_FILE_INTERNAL_INFORMATION open_id;
+            status = NtQueryInformationFile(s_files[i].handle, &io_status,
+                                            &open_id, sizeof(open_id),
+                                            FileInternalInformation);
+            if (!NT_SUCCESS(status) || target_id.IndexNumber == open_id.IndexNumber) {
+                if (NT_SUCCESS(status))
+                    errno = EBUSY;
+                else
+                    errno = nt_status_to_errno(status);
+                int error = errno;
+                NtClose(handle);
+                pthread_mutex_unlock(&s_fds_mutex);
+                errno = error;
+                return -1;
+            }
+        }
+    } else {
+        int error = nt_status_to_errno(status);
+        NtClose(handle);
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = error;
+        return -1;
+    }
+
+    X_FILE_DISPOSITION_INFORMATION disposition = { .DeleteFile = TRUE };
+    status = NtSetInformationFile(handle, &io_status, &disposition,
+                                  sizeof(disposition), FileDispositionInformation);
+    NTSTATUS close_status = NtClose(handle);
+    if (NT_SUCCESS(status) && NT_SUCCESS(close_status)) {
+        X_FILE_NETWORK_OPEN_INFORMATION info;
+        NTSTATUS query_status = NtQueryFullAttributesFile(&attrs, &info);
+        if (NT_SUCCESS(query_status)) {
+            pthread_mutex_unlock(&s_fds_mutex);
+            errno = EIO;
+            return -1;
+        } else if (query_status != (NTSTATUS)STATUS_NO_SUCH_FILE &&
+                   query_status != (NTSTATUS)STATUS_OBJECT_NAME_NOT_FOUND &&
+                   query_status != (NTSTATUS)STATUS_OBJECT_PATH_NOT_FOUND) {
+            status = query_status;
+        }
+    }
+    pthread_mutex_unlock(&s_fds_mutex);
+
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    if (!NT_SUCCESS(close_status)) {
+        errno = nt_status_to_errno(close_status);
+        return -1;
+    }
+    return 0;
+}
+
+int unlink(const char *path) {
+    return unlinkat(AT_FDCWD, path, 0);
 }

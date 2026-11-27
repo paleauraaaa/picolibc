@@ -359,6 +359,52 @@ main(void)
     CHECK(memcmp(buffer, "paths", sizeof(buffer)) == 0, "verify native path");
     CHECK(close(fd) == 0, "close native path");
 
+    CHECK(unlinkat(-1, POSIX_CHILD, AT_REMOVEDIR) == -1 && errno == ENOSYS,
+          "unlinkat directory deletion is unsupported");
+    CHECK(stat(POSIX_DOT_PATH, &other_stat) == 0 && S_ISREG(other_stat.st_mode),
+          "unsupported directory deletion preserves contents");
+    CHECK(unlink(POSIX_CHILD) == -1 && errno == EISDIR,
+          "unlink rejects directory");
+    CHECK(unlinkat(AT_FDCWD, FILE_NAME, 0x40000000) == -1 && errno == EINVAL,
+          "unlinkat rejects unknown flags");
+    CHECK(unlinkat(AT_FDCWD, NULL, 0) == -1 && errno == EFAULT,
+          "unlinkat rejects null path");
+    CHECK(unlinkat(AT_FDCWD, "", 0) == -1 && errno == ENOENT,
+          "unlinkat rejects empty path");
+    CHECK(unlinkat(-1, FILE_NAME, 0) == -1 && errno == EBADF,
+          "unlinkat rejects invalid dirfd");
+    fd = open(FILE_NAME, O_RDONLY);
+    CHECK(fd >= 0, "open file for unlink tests");
+    CHECK(unlinkat(fd, FILE_NAME, 0) == -1 && errno == ENOTDIR,
+          "unlinkat rejects file as directory");
+    CHECK(unlink("picolibc-PATH-xenia-test.bin") == -1 && errno == EBUSY,
+          "unlink rejects open file irrespective of path case");
+    CHECK(unlink("\\Device\\Harddisk0\\Partition1\\picolibc-path-xenia-dir\\child\\" FILE_NAME)
+          == -1 && errno == EBUSY, "unlink rejects open file through device alias");
+    CHECK(pread(fd, buffer, sizeof(buffer), 0) == sizeof(buffer) &&
+          memcmp(buffer, "paths", sizeof(buffer)) == 0,
+          "failed unlink preserves open file");
+    CHECK(close(fd) == 0, "close file before unlink");
+    CHECK(unlink(FILE_NAME "/") == -1 && errno == ENOTDIR,
+          "unlink rejects trailing slash on file");
+    CHECK(stat(FILE_NAME, &other_stat) == 0, "trailing slash preserves file");
+    CHECK(unlinkat(-1, POSIX_DOT_PATH, 0) == 0,
+          "unlinkat absolute path ignores dirfd");
+    CHECK(stat(FILE_NAME, &other_stat) == -1 && errno == ENOENT,
+          "unlinked file is absent");
+    fd = open(FILE_NAME, O_CREAT | O_TRUNC | O_RDWR, 0);
+    CHECK(fd >= 0 && close(fd) == 0, "recreate unlinked file");
+    base_dirfd = open(POSIX_DIR, O_RDONLY | O_DIRECTORY);
+    CHECK(base_dirfd >= 0, "open base directory for unlinkat");
+    CHECK(unlinkat(base_dirfd, "child/" FILE_NAME, 0) == 0,
+          "unlinkat relative to directory descriptor");
+    CHECK(close(base_dirfd) == 0, "close unlinkat base directory");
+    CHECK(unlink(FILE_NAME) == -1 && errno == ENOENT, "unlink missing file");
+    fd = open(FILE_NAME, O_CREAT | O_TRUNC | O_RDWR, 0);
+    CHECK(fd >= 0 && close(fd) == 0, "recreate file for unlink");
+    CHECK(unlink(FILE_NAME) == 0, "unlink relative to current directory");
+    CHECK(unlink(FILE_NAME) == -1 && errno == ENOENT, "verify unlink removal");
+
     puts("PICO_PATH_PASS");
     return 0;
 }

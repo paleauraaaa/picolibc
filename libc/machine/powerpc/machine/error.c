@@ -4,6 +4,8 @@
 
 int nt_status_to_errno(NTSTATUS status) {
     switch ((uint32_t)status) {
+    case 0xC0000043: /* STATUS_SHARING_VIOLATION */
+        return EBUSY;
     case STATUS_INVALID_HANDLE:
         return EBADF;
     case STATUS_INVALID_PARAMETER:
