@@ -498,6 +498,9 @@ int   fileno(FILE *stream) __nonnull((1)) __picolibc_export;
 void  perror(const char *s) __picolibc_export;
 int   remove(const char *pathname) __picolibc_export;
 int   rename(const char *oldpath, const char *newpath) __picolibc_export;
+#if __POSIX_VISIBLE >= 200809
+int   renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) __picolibc_export;
+#endif
 void  rewind(FILE *stream) __nonnull((1)) __picolibc_export;
 void  setbuf(FILE *stream, char *buf) __nonnull((1)) __picolibc_export;
 void  setbuffer(FILE *stream, char *buf, size_t size) __nonnull((1)) __picolibc_export;
