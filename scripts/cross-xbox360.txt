@@ -19,13 +19,8 @@ picolibc_xbox360 = true
 
 [built-in options]
 b_vscrt = 'none'
-<<<<<<< HEAD
 c_args = ['-isystem', xbox360_headers ]
 cpp_args = ['-isystem', xbox360_headers ]
-=======
-c_args = ['-isystem', xbox360_headers, '-gcodeview']
-cpp_args = ['-isystem', xbox360_headers, '-gcodeview']
->>>>>>> 62ad54d39 (More Xbox 360 impl.)
 c_link_args = ['-nostdlib', '-Wl,/entry:main']
 cpp_link_args = ['-nostdlib', '-Wl,/entry:main']
 

@@ -385,4 +385,9 @@ Once configured, you can compile the libraries with
     ...
     $ ninja install
     ...
-    
+
+### Xbox 360 file metadata
+
+The Xbox `fstatat` implementation supports directory-relative paths and
+`AT_EMPTY_PATH`. For nonempty paths, `AT_SYMLINK_NOFOLLOW` returns `ENOSYS`:
+the port does not yet support no-follow metadata queries.

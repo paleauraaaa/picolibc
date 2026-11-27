@@ -1,4 +1,5 @@
 /* Standalone Xbox guest test; link with the Xbox CRT and kernel/XAM imports. */
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -10,7 +11,6 @@
 #include <windef.h>
 #include <xboxkrnl.h>
 
-unsigned int _tls_index;
 struct file_descriptor;
 extern struct file_descriptor *file_descriptor(int fd);
 
@@ -77,11 +77,39 @@ main(void)
           "fstat stdout");
     CHECK(fstat(STDERR_FILENO, &file_stat) == 0 && S_ISCHR(file_stat.st_mode),
           "fstat stderr");
+    CHECK(fstatat(STDOUT_FILENO, "", &file_stat, AT_EMPTY_PATH) == 0 &&
+          S_ISCHR(file_stat.st_mode), "fstatat empty stdout path");
+    CHECK(fstatat(-1, "", &file_stat, AT_EMPTY_PATH) == -1 && errno == EBADF,
+          "fstatat empty path rejects invalid descriptor");
+    errno = 0;
+    CHECK(fstatat(AT_FDCWD, "relative", &file_stat, 0) == -1 && errno == ENOENT,
+          "fstatat without current directory");
+    CHECK(fstatat(AT_FDCWD, "", &file_stat, AT_EMPTY_PATH) == -1 && errno == ENOENT,
+          "fstatat empty path without current directory");
+    CHECK(fstatat(-1, POSIX_DIR, &file_stat, 0x40000000) == -1 && errno == EINVAL,
+          "fstatat rejects unknown flags");
+    CHECK(fstatat(-1, NULL, &file_stat, 0) == -1 && errno == EFAULT,
+          "fstatat null path");
+    CHECK(fstatat(-1, POSIX_DIR, NULL, 0) == -1 && errno == EFAULT,
+          "fstatat null buffer");
     int dirfd = open(POSIX_DIR, O_CREAT | O_RDWR | O_DIRECTORY, 0);
     CHECK(dirfd >= 0, "create POSIX directory");
     memset(&file_stat, 0xcc, sizeof(file_stat));
     CHECK(fstat(dirfd, &file_stat) == 0 && S_ISDIR(file_stat.st_mode), "fstat directory");
     CHECK((file_stat.st_mode & S_IXUSR) != 0, "directory is searchable");
+    CHECK(fstatat(dirfd, ".", &other_stat, 0) == 0 && S_ISDIR(other_stat.st_mode) &&
+          other_stat.st_dev == file_stat.st_dev && other_stat.st_ino == file_stat.st_ino,
+          "fstatat relative directory");
+    CHECK(fstatat(dirfd, "", &other_stat, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) == 0 &&
+          other_stat.st_dev == file_stat.st_dev && other_stat.st_ino == file_stat.st_ino,
+          "fstatat empty directory path");
+    CHECK(fstatat(dirfd, "", &other_stat, 0) == -1 && errno == ENOENT,
+          "fstatat rejects empty path");
+    memcpy(&other_stat, &file_stat, sizeof(file_stat));
+    CHECK(fstatat(dirfd, ".", &other_stat, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOSYS,
+          "fstatat no-follow is unsupported");
+    CHECK(memcmp(&file_stat, &other_stat, sizeof(file_stat)) == 0,
+          "fstatat leaves buffer unchanged on error");
     CHECK(close(dirfd) == 0, "close POSIX directory");
     CHECK(stat(POSIX_DIR, &file_stat) == 0 && S_ISDIR(file_stat.st_mode),
           "stat directory");
@@ -108,6 +136,8 @@ main(void)
     CHECK(getcwd(cwd, sizeof(cwd)) == cwd, "getcwd at volume root");
     CHECK(strcmp(cwd, "/game") == 0, "parent path cannot escape volume");
     CHECK(chdir(POSIX_CHILD) == 0, "restore child directory");
+    CHECK(fstatat(AT_FDCWD, "", &other_stat, AT_EMPTY_PATH) == 0 &&
+          S_ISDIR(other_stat.st_mode), "fstatat empty path for current directory");
     char short_cwd[2];
     CHECK(getcwd(short_cwd, sizeof(short_cwd)) == NULL && errno == ERANGE,
           "getcwd rejects undersized buffer");
@@ -122,6 +152,17 @@ main(void)
     CHECK(fstat(fd, &file_stat) == 0, "fstat written file");
     CHECK(S_ISREG(file_stat.st_mode) && file_stat.st_size == sizeof(buffer),
           "fstat file type and size");
+    CHECK(fstatat(fd, "", &other_stat, AT_EMPTY_PATH) == 0 &&
+          other_stat.st_dev == file_stat.st_dev && other_stat.st_ino == file_stat.st_ino &&
+          other_stat.st_size == file_stat.st_size, "fstatat empty file path");
+    CHECK(fstatat(fd, FILE_NAME, &other_stat, 0) == -1 && errno == ENOTDIR,
+          "fstatat rejects file as directory");
+    CHECK(fstatat(-1, POSIX_DOT_PATH, &other_stat, 0) == 0 &&
+          other_stat.st_ino == file_stat.st_ino, "fstatat absolute path ignores dirfd");
+    CHECK(fstatat(AT_FDCWD, FILE_NAME, &other_stat, 0) == 0 &&
+          other_stat.st_ino == file_stat.st_ino, "fstatat relative to current directory");
+    CHECK(fstatat(-1, FILE_NAME, &other_stat, 0) == -1 && errno == EBADF,
+          "fstatat rejects invalid dirfd");
     CHECK((file_stat.st_mode & (S_IRUSR | S_IWUSR | S_IXUSR)) ==
           (S_IRUSR | S_IWUSR), "fstat regular file permissions");
     CHECK(file_stat.st_blksize == 512 && file_stat.st_blocks >= 1,
@@ -261,6 +302,9 @@ main(void)
 
     int base_dirfd = open(POSIX_DIR, O_RDWR | O_DIRECTORY);
     CHECK(base_dirfd >= 0, "open absolute base directory");
+    CHECK(fstatat(base_dirfd, "child/" FILE_NAME, &other_stat, 0) == 0 &&
+          S_ISREG(other_stat.st_mode) && other_stat.st_ino == file_stat.st_ino &&
+          other_stat.st_size == sizeof(buffer), "fstatat file relative to directory");
     fd = openat(base_dirfd, "child/../child/" FILE_NAME, O_RDONLY);
     CHECK(fd >= 0, "openat relative to absolute directory");
     CHECK(read(fd, buffer, sizeof(buffer)) == sizeof(buffer),

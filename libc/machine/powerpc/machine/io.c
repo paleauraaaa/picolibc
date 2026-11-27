@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -401,8 +402,12 @@ int openat(int dirfd, const char* path, int flags, ...) {
     bool absolute_path = is_absolute_path(path);
     if (!absolute_path && dirfd == AT_FDCWD) {
         pthread_mutex_lock(&s_cwd_mutex);
-        if (s_cwd_fd == -1 ||
-            append_path(s_cwd, path, cwd_path, sizeof(cwd_path), NULL) == -1) {
+        if (s_cwd_fd == -1) {
+            pthread_mutex_unlock(&s_cwd_mutex);
+            errno = ENOENT;
+            return -1;
+        }
+        if (append_path(s_cwd, path, cwd_path, sizeof(cwd_path), NULL) == -1) {
             pthread_mutex_unlock(&s_cwd_mutex);
             return -1;
         }
@@ -946,21 +951,22 @@ int fstat(int fd, struct stat *buf) {
     if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
         if (buf == NULL) {
             errno = EFAULT;
-            return -1;
+            goto done;
         }
         result.st_mode = S_IFCHR | S_IWUSR | S_IWGRP | S_IWOTH;
         *buf = result;
-        return 0;
+        ret = 0;
+        goto done;
     }
 
     file_descriptor_t *f = file_descriptor(fd);
     if (f == NULL || f->handle == NULL) {
         errno = EBADF;
-        return -1;
+        goto done;
     }
     if (buf == NULL) {
         errno = EFAULT;
-        return -1;
+        goto done;
     }
 
     status = NtQueryInformationFile(f->handle, &io_status, &info, sizeof(info),
@@ -1014,10 +1020,42 @@ done:
     return ret;
 }
 
-int stat(const char *path, struct stat *buf) {
-    int fd = open(path, O_RDONLY);
+int fstatat(int dirfd, const char *path, struct stat *buf, int flags) {
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (path == NULL || buf == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (path[0] == '\0') {
+        if (!(flags & AT_EMPTY_PATH)) {
+            errno = ENOENT;
+            return -1;
+        }
+        if (dirfd != AT_FDCWD)
+            return fstat(dirfd, buf);
+
+        pthread_mutex_lock(&s_cwd_mutex);
+        int ret;
+        if (s_cwd_fd == -1) {
+            errno = ENOENT;
+            ret = -1;
+        } else {
+            ret = fstat(s_cwd_fd, buf);
+        }
+        pthread_mutex_unlock(&s_cwd_mutex);
+        return ret;
+    }
+    if (flags & AT_SYMLINK_NOFOLLOW) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    int fd = openat(dirfd, path, O_RDONLY);
     if (fd < 0 && errno == EISDIR)
-        fd = open(path, O_RDONLY | O_DIRECTORY);
+        fd = openat(dirfd, path, O_RDONLY | O_DIRECTORY);
     if (fd < 0)
         return -1;
     int ret = fstat(fd, buf);
@@ -1028,6 +1066,10 @@ int stat(const char *path, struct stat *buf) {
         return -1;
     }
     return close(fd);
+}
+
+int stat(const char *path, struct stat *buf) {
+    return fstatat(AT_FDCWD, path, buf, 0);
 }
 
 int lstat(const char *path, struct stat *buf) {
