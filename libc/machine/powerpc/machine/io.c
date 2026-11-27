@@ -1243,6 +1243,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
         error = nt_status_to_errno(status);
         goto done;
     }
+
     status = NtQueryFullAttributesFile(&new_attrs, &new_info);
     bool target_exists = NT_SUCCESS(status);
     if (!target_exists && status != (NTSTATUS)STATUS_NO_SUCH_FILE &&
@@ -1251,6 +1252,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
         error = nt_status_to_errno(status);
         goto done;
     }
+    
     bool source_is_dir = (old_info.Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     if ((is_path_separator(oldpath[strlen(oldpath) - 1]) && !source_is_dir) ||
         (is_path_separator(newpath[strlen(newpath) - 1]) &&
@@ -1258,13 +1260,16 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
         error = ENOTDIR;
         goto done;
     }
+
     if (strcasecmp(old_native, new_native) == 0)
         goto done;
+
     if (target_exists &&
         source_is_dir != ((new_info.Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
         error = source_is_dir ? ENOTDIR : EISDIR;
         goto done;
     }
+
     for (int i = 0; i < MAX_FD - 3; i++) {
         if (s_files[i].handle != NULL &&
             (source_is_dir || strcasecmp(s_files[i].path, old_native) == 0 ||
@@ -1273,6 +1278,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
             goto done;
         }
     }
+
     status = NtCreateFile(&source, DELETE_ACCESS | SYNCHRONIZE, &old_attrs,
                           &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -1296,16 +1302,19 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
             error = nt_status_to_errno(status);
             goto done;
         }
+
         status = NtQueryInformationFile(target, &io_status, &new_id, sizeof(new_id),
                                         FileInternalInformation);
         if (!NT_SUCCESS(status)) {
             error = nt_status_to_errno(status);
             goto done;
         }
+
         if (old_id.IndexNumber == new_id.IndexNumber) {
             error = EBUSY;
             goto done;
         }
+        
         status = NtClose(target);
         target = NULL;
         if (!NT_SUCCESS(status)) {
@@ -1313,6 +1322,7 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
             goto done;
         }
     }
+
     for (int i = 0; i < MAX_FD - 3; i++) {
         if (s_files[i].handle == NULL)
             continue;
@@ -1345,16 +1355,19 @@ done:
         if (!NT_SUCCESS(status) && !error)
             error = nt_status_to_errno(status);
     }
+
     if (source != NULL) {
         status = NtClose(source);
         if (!NT_SUCCESS(status) && !error)
             error = nt_status_to_errno(status);
     }
+
     pthread_mutex_unlock(&s_fds_mutex);
     if (error) {
         errno = error;
         return -1;
     }
+
     return 0;
 }
 
@@ -1370,17 +1383,20 @@ DIR* fdopendir(int fd) {
         errno = EBADF;
         return NULL;
     }
+
     if (!file->is_dir) {
         pthread_mutex_unlock(&s_fds_mutex);
         errno = ENOTDIR;
         return NULL;
     }
+
     DIR *dir = calloc(1, sizeof(*dir));
     if (dir == NULL) {
         pthread_mutex_unlock(&s_fds_mutex);
         errno = ENOMEM;
         return NULL;
     }
+
     dir->fd = fd;
     pthread_mutex_unlock(&s_fds_mutex);
     return dir;
@@ -1390,7 +1406,9 @@ DIR* opendir(const char *name) {
     int fd = open(name, O_RDONLY | O_DIRECTORY);
     if (fd == -1)
         return NULL;
+
     DIR *dir = fdopendir(fd);
+
     if (!dir) {
         int error = errno;
         close(fd);
@@ -1451,6 +1469,7 @@ struct dirent *readdir(DIR *dir) {
                 errno = nt_status_to_errno(status);
             return NULL;
         }
+        
         if (io_status.Information < header_size ||
             io_status.Information > sizeof(dir->buf)) {
             pthread_mutex_unlock(&s_fds_mutex);
@@ -1468,6 +1487,7 @@ struct dirent *readdir(DIR *dir) {
         errno = EIO;
         return NULL;
     }
+
     memcpy(&info, dir->buf + dir->offset, header_size);
     if (info.FileNameLength == 0 ||
         info.FileNameLength > remaining - header_size ||
@@ -1479,12 +1499,14 @@ struct dirent *readdir(DIR *dir) {
         errno = EIO;
         return NULL;
     }
+
     if (info.FileNameLength >= sizeof(dir->dirent.d_name)) {
         dir->count = 0;
         pthread_mutex_unlock(&s_fds_mutex);
         errno = ENAMETOOLONG;
         return NULL;
     }
+
     memcpy(dir->dirent.d_name, dir->buf + dir->offset + header_size,
            info.FileNameLength);
     dir->dirent.d_name[info.FileNameLength] = '\0';
@@ -1494,11 +1516,13 @@ struct dirent *readdir(DIR *dir) {
         .MaximumLength = (USHORT)(info.FileNameLength + 1),
         .Buffer = dir->dirent.d_name,
     };
+
     X_OBJECT_ATTRIBUTES attrs = {
         .RootDirectory = file->handle,
         .ObjectName = &name,
         .Attributes = 0,
     };
+
     LARGE_INTEGER allocation_size = { .QuadPart = 0 };
     X_FILE_INTERNAL_INFORMATION internal_info;
     HANDLE entry_handle = NULL;
@@ -1509,6 +1533,7 @@ struct dirent *readdir(DIR *dir) {
         FILE_SYNCHRONOUS_IO_NONALERT |
             ((info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ?
              FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE));
+
     if (NT_SUCCESS(status)) {
         status = NtQueryInformationFile(entry_handle, &io_status,
                                         &internal_info, sizeof(internal_info),
@@ -1517,6 +1542,7 @@ struct dirent *readdir(DIR *dir) {
         if (NT_SUCCESS(status))
             status = close_status;
     }
+
     if (!NT_SUCCESS(status)) {
         pthread_mutex_unlock(&s_fds_mutex);
         errno = nt_status_to_errno(status);
@@ -1529,10 +1555,12 @@ struct dirent *readdir(DIR *dir) {
     else
         dir->dirent.d_type = (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ?
                              DT_DIR : DT_REG;
+
     if (info.NextEntryOffset == 0)
         dir->count = 0;
     else
         dir->offset += info.NextEntryOffset;
+
     pthread_mutex_unlock(&s_fds_mutex);
     return &dir->dirent;
 }
