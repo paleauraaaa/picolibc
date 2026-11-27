@@ -566,6 +566,23 @@ int openat(int dirfd, const char* path, int flags, ...) {
         return -1;
     }
     if (f != NULL) {
+        if (DesiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)) {
+            X_FILE_NETWORK_OPEN_INFORMATION info;
+            X_IO_STATUS_BLOCK io_status = {0};
+            NTSTATUS status = NtQueryInformationFile(
+                f->handle, &io_status, &info, sizeof(info),
+                FileNetworkOpenInformation);
+            if (!NT_SUCCESS(status)) {
+                pthread_mutex_unlock(&s_fds_mutex);
+                errno = nt_status_to_errno(status);
+                return -1;
+            }
+            if (info.Attributes & FILE_ATTRIBUTE_READONLY) {
+                pthread_mutex_unlock(&s_fds_mutex);
+                errno = EACCES;
+                return -1;
+            }
+        }
         if ((flags & O_TRUNC) && set_file_length(f, 0) < 0) {
             pthread_mutex_unlock(&s_fds_mutex);
             return -1;
@@ -1184,6 +1201,154 @@ int lstat(const char *path, struct stat *buf) {
     (void) buf;
     errno = ENOSYS;
     return -1;
+}
+
+static NTSTATUS
+set_file_mode(HANDLE handle, mode_t mode)
+{
+    X_IO_STATUS_BLOCK io_status = {0};
+    X_FILE_NETWORK_OPEN_INFORMATION current;
+    NTSTATUS status = NtQueryInformationFile(handle, &io_status, &current,
+                                              sizeof(current),
+                                              FileNetworkOpenInformation);
+    if (NT_SUCCESS(status)) {
+        ULONGLONG attributes = current.Attributes;
+        if (mode & (S_IWUSR | S_IWGRP | S_IWOTH))
+            attributes &= ~((ULONGLONG)FILE_ATTRIBUTE_READONLY);
+        else
+            attributes |= FILE_ATTRIBUTE_READONLY;
+        if (attributes & ~((ULONGLONG)FILE_ATTRIBUTE_NORMAL))
+            attributes &= ~((ULONGLONG)FILE_ATTRIBUTE_NORMAL);
+        else
+            attributes = FILE_ATTRIBUTE_NORMAL;
+
+        X_FILE_BASIC_INFORMATION info = {0};
+        info.Attributes = attributes;
+        status = NtSetInformationFile(handle, &io_status, &info,
+                                      sizeof(info), FileBasicInformation);
+    }
+    return status;
+}
+
+static int
+same_file(HANDLE first, HANDLE second)
+{
+    enum { FileFsVolumeInformation = 1 };
+    X_IO_STATUS_BLOCK io_status = {0};
+    X_FILE_INTERNAL_INFORMATION first_id, second_id;
+    struct {
+        LARGE_INTEGER creation_time;
+        ULONG serial_number;
+        ULONG label_length;
+        UCHAR supports_objects;
+        char label[PATH_MAX + 1];
+    } volume;
+
+    NTSTATUS status = NtQueryInformationFile(first, &io_status, &first_id,
+                                              sizeof(first_id), FileInternalInformation);
+    if (NT_SUCCESS(status))
+        status = NtQueryInformationFile(second, &io_status, &second_id,
+                                        sizeof(second_id), FileInternalInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    if (first_id.IndexNumber != second_id.IndexNumber) {
+        errno = ESTALE;
+        return -1;
+    }
+    status = NtQueryVolumeInformationFile(first, &io_status, &volume,
+                                           sizeof(volume), FileFsVolumeInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    ULONG serial = volume.serial_number;
+    status = NtQueryVolumeInformationFile(second, &io_status, &volume,
+                                           sizeof(volume), FileFsVolumeInformation);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    if (serial != volume.serial_number) {
+        errno = ESTALE;
+        return -1;
+    }
+    return 0;
+}
+
+int fchmod(int fd, mode_t mode) {
+    pthread_mutex_lock(&s_fds_mutex);
+    file_descriptor_t *f = file_descriptor(fd);
+    if (f == NULL) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = EBADF;
+        return -1;
+    }
+    if (f->console) {
+        pthread_mutex_unlock(&s_fds_mutex);
+        errno = ENOTSUP;
+        return -1;
+    }
+
+    NTSTATUS status = set_file_mode(f->handle, mode);
+    if (status == (NTSTATUS)STATUS_ACCESS_DENIED) {
+        enum { FileWriteAttributes = 0x100 };
+        size_t length = strlen(f->path);
+        ANSI_STRING name = {
+            .Length = (USHORT)length,
+            .MaximumLength = (USHORT)(length + 1),
+            .Buffer = f->path,
+        };
+        X_OBJECT_ATTRIBUTES attrs = {
+            .RootDirectory = NULL,
+            .ObjectName = &name,
+            .Attributes = 0,
+        };
+        X_IO_STATUS_BLOCK io_status = {0};
+        LARGE_INTEGER allocation_size = { .QuadPart = 0 };
+        HANDLE handle = NULL;
+        status = NtCreateFile(&handle, FileWriteAttributes | SYNCHRONIZE, &attrs,
+                              &io_status, &allocation_size, FILE_ATTRIBUTE_NORMAL,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT |
+                              (f->is_dir ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE));
+        if (NT_SUCCESS(status)) {
+            int ret = same_file(f->handle, handle);
+            int error = errno;
+            if (ret == 0)
+                status = set_file_mode(handle, mode);
+            NTSTATUS close_status = NtClose(handle);
+            if (ret < 0) {
+                pthread_mutex_unlock(&s_fds_mutex);
+                errno = error;
+                return -1;
+            }
+            if (NT_SUCCESS(status))
+                status = close_status;
+        }
+    }
+    pthread_mutex_unlock(&s_fds_mutex);
+    if (!NT_SUCCESS(status)) {
+        errno = nt_status_to_errno(status);
+        return -1;
+    }
+    return 0;
+}
+
+int chmod(const char *path, mode_t mode) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0 && errno == EISDIR)
+        fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (fd < 0)
+        return -1;
+    int ret = fchmod(fd, mode);
+    int error = errno;
+    if (close(fd) < 0 && ret == 0)
+        return -1;
+    if (ret < 0)
+        errno = error;
+    return ret;
 }
 
 int mkdirat(int dirfd, const char *path, mode_t mode) {

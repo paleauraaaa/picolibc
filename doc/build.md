@@ -405,6 +405,11 @@ the port does not yet support no-follow metadata queries.
 
 Xbox `mkdir` and `mkdirat` create directories but ignore the requested mode;
 the port synthesizes permissions rather than enforcing POSIX mode bits.
+`chmod` and `fchmod` map any write bit to a writable file and no write bits
+to the native read-only attribute; other mode bits cannot be represented.
+If attribute access requires reopening a descriptor's stored path, `fchmod`
+checks its file and volume identifiers and rejects mismatches. Reopening can
+fail if the file was moved; native attribute behavior on hardware is unverified.
 As with other Xbox path operations, `..` is normalized lexically, so a
 component removed by `..` is not checked for existence.
 
