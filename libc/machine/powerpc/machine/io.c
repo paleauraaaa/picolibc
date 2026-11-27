@@ -1212,7 +1212,6 @@ int unlinkat(int dirfd, const char *path, int flags) {
 int unlink(const char *path) {
     return unlinkat(AT_FDCWD, path, 0);
 }
-<<<<<<< HEAD
 
 int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
     char old_native[PATH_MAX + 1], new_native[PATH_MAX + 1];
@@ -1358,5 +1357,3 @@ done:
 int rename(const char *oldpath, const char *newpath) {
     return renameat(AT_FDCWD, oldpath, AT_FDCWD, newpath);
 }
-=======
->>>>>>> 7d3a7f407dc78d9be5e2b0b5b054a57d70d0599a
